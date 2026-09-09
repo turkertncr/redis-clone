@@ -1,10 +1,7 @@
-//
-// Created by turker on 18.08.2026.
-//
-
-#include "include/data_types/set.h"
 
 #include <stdlib.h>
+
+#include <include/data_types/set.h>
 
 set* set_create() {
     set *set = malloc(sizeof(*set));

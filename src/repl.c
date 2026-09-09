@@ -4,17 +4,13 @@
 
 #include <include/command_handler.h>
 #include <include/data_types/hash_table.h>
+#include <include/repl.h>
 
 #define SPLIT_MAX_ARGS 64
 
 static hash_table *ht;
 
-struct split {
-    size_t len;
-    char** args;
-};
-
-static struct split split_cmd(char *args) {
+struct split split_cmd(char *args) {
     struct split result = { .len = 0, .args = malloc(sizeof(char*) * SPLIT_MAX_ARGS) };
 
     char *tok = strtok(args, " ");
@@ -26,7 +22,7 @@ static struct split split_cmd(char *args) {
     return result;
 }
 
-static getall_ctx build_resp(char **resp_arr, size_t resp_arr_size) {
+getall_ctx build_resp(char **resp_arr, size_t resp_arr_size) {
     size_t resp_size = 1024;
     char *resp = malloc(resp_size);
     getall_ctx ctx = { .buf = resp, .capacity = resp_size, .len = 0 };

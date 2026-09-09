@@ -1,11 +1,8 @@
-//
-// Created by turker on 13.08.2026.
-//
-
-#include "../../include/data_types/quick_list.h"
-#include "../../include/data_types/zip_list.h"
 
 #include <stdlib.h>
+
+#include <include/data_types/quick_list.h>
+#include <include/data_types/zip_list.h>
 
 ql* quicklist_create() {
     ql *ql = malloc(sizeof(*ql));

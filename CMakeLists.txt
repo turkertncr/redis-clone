@@ -26,10 +26,10 @@ add_executable(redis_clone main.c
         src/data_types/sorted_set.c
         include/data_types/set.h
         src/data_types/set.c
-        include/util.h
-        src/util.c
         include/repl.h
         src/repl.c
+        include/client.h
+        src/client.c
 )
 
 target_include_directories(redis_clone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

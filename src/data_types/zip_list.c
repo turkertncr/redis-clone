@@ -1,6 +1,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+
 #include <include/data_types/zip_list.h>
 
 ziplist ziplist_create() {

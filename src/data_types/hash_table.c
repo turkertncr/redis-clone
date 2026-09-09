@@ -1,10 +1,10 @@
-#include "../../include/data_types/hash_table.h"
 
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "include/data_types/redis_string.h"
+#include <include/data_types/hash_table.h>
+#include <include/data_types/redis_string.h>
 
 #define HASH_TABLE_LOAD_FACTOR 0.75
 

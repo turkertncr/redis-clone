@@ -1,7 +1,7 @@
 
 #include <stdlib.h>
 
-#include "include/data_types/skip_list.h"
+#include <include/data_types/skip_list.h>
 
 sl* sl_create() {
     sl *sl = malloc(sizeof(*sl));
