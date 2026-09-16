@@ -27,21 +27,28 @@ struct __attribute__((__packed__)) zlentry {
     unsigned char data[];
 };
 
-static const size_t hdrsize = sizeof(struct zlhdr);
-static const size_t zlentry_hdrsize = sizeof(struct zlentry);
+static const int hdrsize = sizeof(struct zlhdr);
+static const int zlentry_hdrsize = sizeof(struct zlentry);
 
 #define ZL_HEADER_SIZE (sizeof(struct zlhdr))
 #define ZL_END_SIZE 1
+#define ZL_END 0xFF
 
 #define ZL_BYTES(zl) (((struct zlhdr*)(zl - hdrsize))->zlbytes)
-
-#define ZL_END 0xFF
 
 ziplist ziplist_create();
 ziplist ziplist_head_push(ziplist zl, const char* data, uint32_t data_len);
 ziplist ziplist_tail_push(ziplist zl, const char* data, uint32_t data_len);
 ziplist ziplist_head_pop(ziplist zl);
 ziplist ziplist_tail_pop(ziplist zl);
+ziplist ziplist_insert(ziplist zl, const char *pivot, uint32_t pivot_size, const char* data, uint32_t data_len, int before);
+ziplist ziplist_remove(ziplist zl, const char *data, uint32_t data_len, int count);
 void ziplist_free(ziplist zl);
+struct zlentry* zltail(ziplist zl);
+struct zlentry* zlhead(ziplist zl);
+struct zlentry* ziplist_get_at(ziplist zl, int index);
+struct zlentry* zlnext(struct zlentry *entry);
+struct zlentry* zlprev(struct zlentry *entry);
+struct zlhdr* getzlhdr(ziplist zl);
 
 #endif //REDIS_CLONE_ZIP_LIST_H

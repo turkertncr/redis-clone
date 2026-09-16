@@ -19,5 +19,6 @@ int handle_string_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char 
 int handle_hash_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size);
 int handle_set_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size);
 int handle_zset_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size);
+int handle_list_commands(sds cmd, resp_object *resp, hash_table *ht, char *response, size_t response_size);
 
 #endif //REDIS_CLONE_COMMAND_HANDLER_H

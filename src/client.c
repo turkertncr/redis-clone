@@ -26,21 +26,10 @@ typedef int SOCKET;
 #include <include/command_handler.h>
 #include <include/repl.h>
 
-static size_t build_command(char *buf, size_t capacity, int argc, char **argv) {
-    size_t len = append_fmt(buf, capacity, 0, "*%d\r\n", argc - 1);
-    for (int i = 0; i < argc; i++) {
-        sds val = sdsnew(argv[i]);
-        len = append_b(buf, capacity, len, val);
-        sdsfree(val);
-    }
-    return len;
-}
-
 int run_client() {
     SOCKET sock;
     struct sockaddr_in server_addr;
     char buf[16384];
-    char out[16384];
 #ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {

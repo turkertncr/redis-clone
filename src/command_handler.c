@@ -8,6 +8,7 @@
 #include <include/redis_object.h>
 #include <include/data_types/set.h>
 #include <include/data_types/sorted_set.h>
+#include <include/data_types/quick_list.h>
 
 #define STRCMP(str1, str2) strcmp(str1, str2) == 0
 
@@ -122,6 +123,12 @@ static void zrange_count(sl_node* node, void *user_data) {
     (void) user_data;
 }
 
+static void lrange_append(struct zlentry *entry, void *user_data) {
+    getall_ctx *ctx = (getall_ctx *) user_data;
+    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
+        "$%u\r\n%.*s\r\n", entry->currlen, entry->currlen, entry->data);
+}
+
 void execute_command(resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
     response[0] = '\0';
 
@@ -137,6 +144,7 @@ void execute_command(resp_object *resp_obj, hash_table *ht, char *response, size
     if (handle_hash_commands(cmd, resp_obj, ht, response, response_size)) return;
     if (handle_set_commands(cmd, resp_obj, ht, response, response_size)) return;
     if (handle_zset_commands(cmd, resp_obj, ht, response, response_size)) return;
+    if (handle_list_commands(cmd, resp_obj, ht, response, response_size)) return;
 
     snprintf(response, response_size, "-ERR unknown command '%s'\r\n", cmd == NULL ? "" : cmd);
 }
@@ -651,3 +659,173 @@ int handle_zset_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *r
 
     return 0;
 }
+
+static int list_push(const char *cmd_name, sds key, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size, quicklist_push_fn fn, int create_if_missing) {
+    if (!check_args_len(3, resp_obj, cmd_name, response, response_size)) return 1;
+
+    redis_object *redis_obj = lookup_redis_object(ht, key);
+    if (redis_obj == NULL) {
+        if (!create_if_missing) {
+            snprintf(response, response_size, "-The list doesnt exist\r\n");
+            return 1;
+        }
+        redis_obj = create_redis_object(OBJ_LIST, NULL, -1);
+        ht_put(ht, key, redis_obj);
+    } else if (redis_obj->type != OBJ_LIST) {
+        err_wrongtype(response, response_size);
+        return 1;
+    }
+
+    ql *ql = redis_obj->ptr;
+    int array_len = resp_obj->array.len;
+
+    int count = 0;
+    for (int i = 2; i < array_len; i++) {
+        sds value = get_bulk_at(resp_obj, i);
+        if (fn(ql, value)) count++;
+    }
+    snprintf(response, response_size, "$%d\r\n", count);
+    return 1;
+}
+
+static int list_pop(const char *cmd_name, sds key, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size, quicklist_pop_fn fn) {
+    if (!check_args_len(3, resp_obj, cmd_name, response, response_size)) return 1;
+
+    redis_object *redis_obj = lookup_redis_object(ht, key);
+    if (redis_obj == NULL) {
+        snprintf(response, response_size, ":0\r\n");
+    } else {
+        if (redis_obj->type != OBJ_LIST) {
+            err_wrongtype(response, response_size);
+            return 1;
+        }
+    }
+
+    ql *ql = redis_obj->ptr;
+    int count = (int)strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
+    int deleted = 0;
+    for (int i = 2; i < count; i++) {
+        if (fn(ql)) deleted++;
+    }
+    snprintf(response, response_size, ":%d\r\n", deleted);
+    return 1;
+}
+
+int handle_list_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
+    sds key = get_bulk_at(resp_obj, 1);
+
+    if (STRCMP(cmd, "LPUSH")) return list_push("lpush", key, resp_obj, ht, response, response_size, quicklist_push_head, 1);
+    if (STRCMP(cmd, "RPUSH")) return list_push("rpush", key, resp_obj, ht, response, response_size, quicklist_push_tail, 1);
+    if (STRCMP(cmd, "LPUSHX")) return list_push("lpushx", key, resp_obj, ht, response, response_size, quicklist_push_head, 0);
+    if (STRCMP(cmd, "RPUSHX")) return list_push("rpushx", key, resp_obj, ht, response, response_size, quicklist_push_tail, 0);
+    if (STRCMP(cmd, "LPOP")) return list_pop("lpop", key, resp_obj, ht, response, response_size, quicklist_pop_head);
+    if (STRCMP(cmd, "RPOP")) return list_pop("rpop", key, resp_obj, ht, response, response_size, quicklist_pop_tail);
+    if (STRCMP(cmd, "LINSERT")) {
+        if (!check_args_len(5, resp_obj, cmd, response, response_size)) return 1;
+
+        redis_object *redis_obj = lookup_redis_object(ht, key);
+        if (redis_obj == NULL) {
+            snprintf(response, response_size, ":0\r\n");
+            return 1;
+        }
+        if (redis_obj->type != OBJ_LIST) {
+            err_wrongtype(response, response_size);
+            return 1;
+        }
+
+        ql *ql = redis_obj->ptr;
+        sds where = toupper_case(get_bulk_at(resp_obj, 2));
+        int before = STRCMP(where, "BEFORE");
+        sds pivot = get_bulk_at(resp_obj, 3);
+        sds value = get_bulk_at(resp_obj, 4);
+
+        if (!quicklist_insert(ql, pivot, sdslen(pivot), value, before)) {
+            snprintf(response, response_size, ":-1\r\n");
+        } else {
+            snprintf(response, response_size, ":%lu\r\n", ql->count);
+        }
+        return 1;
+    }
+    if (STRCMP(cmd, "LLEN")) {
+        if (!check_args_len(2, resp_obj, cmd, response, response_size)) return 1;
+
+        redis_object *redis_obj = lookup_redis_object(ht, key);
+        if (redis_obj == NULL || redis_obj->type != OBJ_LIST) {
+            snprintf(response, response_size, ":0\r\n");
+            return 1;
+        }
+
+        ql *ql = redis_obj->ptr;
+        snprintf(response, response_size, ":%lu\r\n", ql->count);
+        return 1;
+    }
+    if (STRCMP(cmd, "LREM")) {
+        if (!check_args_len(4, resp_obj, cmd, response, response_size)) return 1;
+
+        redis_object *redis_obj = lookup_redis_object(ht, key);
+        if (redis_obj == NULL) {
+            snprintf(response, response_size, ":0\r\n");
+            return 1;
+        }
+        if (redis_obj->type != OBJ_LIST) {
+            err_wrongtype(response, response_size);
+            return 1;
+        }
+
+        sds value = get_bulk_at(resp_obj, 2);
+        int count = (int) strtoll(get_bulk_at(resp_obj, 3), NULL, 10);
+        ql *ql = redis_obj->ptr;
+
+        int del = quicklist_remove(ql, value, count);
+        snprintf(response, response_size, ":%d\r\n", del);
+        return 1;
+    }
+    if (STRCMP(cmd, "LRANGE")) {
+        if (!check_args_len(4, resp_obj, cmd, response, response_size)) return 1;
+
+        redis_object *redis_obj = lookup_redis_object(ht, key);
+        if (redis_obj == NULL) {
+            snprintf(response, response_size, ":0\r\n");
+            return 1;
+        }
+        if (redis_obj->type != OBJ_LIST) {
+            err_wrongtype(response, response_size);
+            return 1;
+        }
+
+        int start = (int) strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
+        int stop = (int) strtoll(get_bulk_at(resp_obj, 3), NULL, 10);
+        ql *ql = redis_obj->ptr;
+
+        getall_ctx ctx = { .len = 0, .buf = response, .capacity = response_size };
+        quicklist_range(ql, start, stop, lrange_append, &ctx);
+        return 1;
+    }
+    if (STRCMP(cmd, "LINDEX")) {
+        if (!check_args_len(3, resp_obj, cmd, response, response_size)) return 1;
+
+        redis_object *redis_obj = lookup_redis_object(ht, key);
+        if (redis_obj == NULL) {
+            snprintf(response, response_size, ":0\r\n");
+            return 1;
+        }
+        if (redis_obj->type != OBJ_LIST) {
+            err_wrongtype(response, response_size);
+            return 1;
+        }
+
+        int index = (int) strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
+
+        ql *ql = redis_obj->ptr;
+        struct zlentry* entry = quicklist_get_at(ql, index);
+        if (!entry) {
+            snprintf(response, response_size, "-Index out of bounds\r\n");
+            return 1;
+        }
+        snprintf(response, response_size, "$%d\r\n%s\r\n", entry->currlen, (sds)entry->data);
+        return 1;
+    }
+    return 0;
+}
+
+

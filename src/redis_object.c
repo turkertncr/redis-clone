@@ -67,7 +67,7 @@ void redis_object_free(redis_object *obj) {
     switch (obj->type) {
         case OBJ_STRING: sdsfree(obj->ptr); break;
         case OBJ_ZSET: zset_free(obj->ptr); break;
-        case OBJ_LIST: quick_list_free(obj->ptr); break;
+        case OBJ_LIST: quicklist_free(obj->ptr); break;
         case OBJ_SET: set_free(obj->ptr); break;
         case OBJ_HASH: ht_free(obj->ptr); break;
     }
