@@ -1,5 +1,5 @@
 
-#include <include/command_handler.h>
+#include <include/resp_parser.h>
 #include <string.h>
 
 void free_respobj(resp_object* obj) {
@@ -36,7 +36,7 @@ void free_array_items(resp_object** ptr, int len) {
     free(ptr);
 }
 
-char* parse_bulk(sds input, resp_object* obj) {
+char* parse_bulk(sds input, const char* end, resp_object* obj) {
 
     char* f_crlf = strstr(input, "\r\n");
     if (f_crlf == NULL) {
@@ -44,10 +44,15 @@ char* parse_bulk(sds input, resp_object* obj) {
         return NULL;
     }
 
-    char* end;
-    long long length = strtoll(input + 1, &end, 10);
+    char* num_end;
+    long long length = strtoll(input + 1, &num_end, 10);
 
-    if (end != f_crlf) {
+    if (num_end != f_crlf) {
+        obj->type = RESP_nil;
+        return NULL;
+    }
+
+    if (length < -1) {
         obj->type = RESP_nil;
         return NULL;
     }
@@ -59,15 +64,18 @@ char* parse_bulk(sds input, resp_object* obj) {
     }
 
     char* str = f_crlf + 2;
-    char* x =  sdsnewlen(str,length);
+    long long available = end - str;
+    if (available < length + 2 || str[length] != '\r' || str[length + 1] != '\n') {
+        obj->type = RESP_nil;
+        return NULL;
+    }
+
+    char* x = sdsnewlen(str, length);
     if (x == NULL) {
         printf("Allocation failed");
         obj->type = RESP_nil;
         return NULL;
     }
-
-    memcpy(x, str, length);
-    x[length] = '\0';
 
     obj->type = RESP_BULK;
     obj->bulk = x;
@@ -143,7 +151,7 @@ char* parse_int(sds input, resp_object* obj) {
     return crlf + 2;
 }
 
-char* parse_array(sds input, resp_object* obj) {
+char* parse_array(sds input, const char* end, resp_object* obj) {
 
     char* crlf = strstr(input, "\r\n");
     if (!crlf) {
@@ -151,9 +159,9 @@ char* parse_array(sds input, resp_object* obj) {
         return NULL;
     }
 
-    char* end;
-    long long array_len = strtoll(input + 1, &end, 10);
-    if (end != crlf || array_len < 0) {
+    char* num_end;
+    long long array_len = strtoll(input + 1, &num_end, 10);
+    if (num_end != crlf || array_len < 0) {
         obj->type = RESP_nil;
         return NULL;
     }
@@ -175,6 +183,11 @@ char* parse_array(sds input, resp_object* obj) {
 
     char* data = crlf + 2;
     for (int i = 0; i < array_len; i++) {
+        if (data >= end) {
+            free_array_items(obj->array.ptr, i);
+            obj->type = RESP_nil;
+            return NULL;
+        }
         char type = data[0];
 
         resp_object* token = malloc(sizeof(*token));
@@ -185,7 +198,7 @@ char* parse_array(sds input, resp_object* obj) {
         }
         *token = (resp_object){0};
 
-        data = handle_type(data, type, token);
+        data = handle_type(data, end, type, token);
         if (!data) {
             free_respobj(token);
             free_array_items(obj->array.ptr, i);
@@ -199,7 +212,7 @@ char* parse_array(sds input, resp_object* obj) {
     return data;
 }
 
-char* handle_type(sds input, char type, resp_object* obj) {
+char* handle_type(sds input, const char* end, char type, resp_object* obj) {
     switch (type) {
         case '+':
             return parse_string(input, obj);
@@ -208,9 +221,9 @@ char* handle_type(sds input, char type, resp_object* obj) {
         case ':' :
             return parse_int(input, obj);
         case '$' :
-            return parse_bulk(input, obj);
+            return parse_bulk(input, end, obj);
         case '*' :
-            return parse_array(input, obj);
+            return parse_array(input, end, obj);
         default :
             obj->type = RESP_nil;
             return NULL;
@@ -253,18 +266,20 @@ void print_respobj(resp_object* obj, int depth) {
     }
 }
 
-resp_object* parse_resp(sds input) {
+resp_object* parse_resp(sds input, const char* end) {
     if (input == NULL) return NULL;
 
     char type = *input;
     resp_object* obj = malloc(sizeof(*obj));
     if (obj == NULL) return NULL;
 
-    handle_type(input, type, obj);
+    handle_type(input, end, type, obj);
     return obj;
 }
 
 sds get_bulk_at(resp_object* resp_obj, int index) {
     if (index < 0 || index >= resp_obj->array.len) { return NULL; }
-    return resp_obj->array.ptr[index]->bulk;
+    const resp_object *resp = resp_obj->array.ptr[index];
+    if (resp->type != RESP_BULK) { return NULL; }
+    return resp->bulk;
 }

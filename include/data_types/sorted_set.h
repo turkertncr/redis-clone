@@ -18,7 +18,7 @@ zset* zset_create();
 
 int zset_add(zset *zset, double score, sds mem);
 int zset_rem(zset* zset, sds mem);
-double zset_find(zset* zset, sds mem);
+int zset_find(zset* zset, sds mem, double *score_out);
 void zset_incr(zset* zset, sds mem, double incr);
 int zset_size(zset* zset);
 void zset_free_fn(void* ptr);

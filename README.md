@@ -17,7 +17,8 @@ A small Redis server clone written in C, with its own RESP parser, TCP server, a
 | Strings | `SET`, `MSET`, `GET`, `MGET`, `INCR`, `DECR`, `INCRBY`, `APPEND` |
 | Hashes | `HSET`, `HGET`, `HGETALL`, `HDEL` |
 | Sets | `SADD`, `SREM`, `SISMEMBER`, `SMEMBERS` |
-| Sorted sets | `ZADD`, `ZREM`, `ZRANGE`, `ZSCORE` |
+| Sorted sets | `ZADD`, `ZREM`, `ZRANGEBYSCORE`, `ZSCORE` |
+| Lists | `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LINSERT`, `LLEN`, `LREM`, `LRANGE`, `LINDEX` |
 
 ## Building
 

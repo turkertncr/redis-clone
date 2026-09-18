@@ -6,7 +6,7 @@
 int main(int argc, char **argv) {
     hash_table *ht = ht_create((ht_value_free_fn) redis_object_free);
     if (argc > 1) {
-        run_client();
+        return run_client();
     }
     return init_socket(ht);
 }

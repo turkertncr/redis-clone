@@ -64,13 +64,13 @@ struct zlentry * zlhead(ziplist zl) {
 }
 
 struct zlentry* zlnext(struct zlentry *entry) {
-    struct zlentry *next = (struct zlentry *)(unsigned char *)(entry + entry->currlen);
+    struct zlentry *next = (struct zlentry *)((unsigned char *)entry + entry->currlen + zlentry_hdrsize);
     if (next == NULL) { return NULL; }
     return next;
 }
 
 struct zlentry* zlprev(struct zlentry *entry) {
-    struct zlentry *next = (struct zlentry *)(unsigned char *)(entry - entry->prevlen - zlentry_hdrsize);
+    struct zlentry *next = (struct zlentry *)((unsigned char *)entry - entry->prevlen);
     if (next == NULL) { return NULL; }
     return next;
 }
@@ -248,7 +248,7 @@ ziplist ziplist_insert(ziplist zl, const char *pivot, uint32_t pivot_size, const
     hdr->zlbytes = new_bytes;
     hdr->zltail = (!before && piv_is_tail) ? (size_t)(pos - (unsigned char *)hdr) : hdr->zltail + entry_size;
     hdr->zllen++;
-    hdr->entries[hdr->zlbytes - 1] = ZL_END;
+    hdr->entries[hdr->zlbytes - 1 - hdrsize] = ZL_END;
 
     return hdr->entries;
 }
@@ -294,7 +294,7 @@ static struct zlhdr* ziplist_remove_at(struct zlhdr *hdr, struct zlentry *entry)
     hdr->zlbytes = new_bytes;
     hdr->zllen = new_len;
     hdr->zltail = (new_len == 0) ? hdrsize : (is_tail ? offset - entry_prevlen : old_tail - entry_size);
-    hdr->entries[hdr->zlbytes - 1] = ZL_END;
+    hdr->entries[hdr->zlbytes - 1 - hdrsize] = ZL_END;
 
     return hdr;
 }

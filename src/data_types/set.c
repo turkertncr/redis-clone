@@ -18,7 +18,7 @@ set* set_create() {
 
 int set_add(set *set, sds value) {
     if (!set) return 0;
-    if (ht_get(set->ht, value) != NULL) return 0;
+    if (ht_exists(set->ht, value)) return 0;
     if (ht_put(set->ht, value, NULL) == 0) return 0;
     set->size++;
     return 1;

@@ -138,6 +138,8 @@ void quicklist_free(ql *ql) {
     free(ql);
 }
 
+static ql_node* quicklist_unlink_node(ql *ql, ql_node *node);
+
 ql_node* find_quicklist_node(ql *ql, const char *pivot, size_t pivot_size) {
     ql_node *node = ql->head;
     while (node && node->count > 0) {
@@ -192,9 +194,19 @@ int quicklist_insert(ql *ql, const char *pivot, size_t pivot_size, sds value, in
         }
         node->next = new_block;
         new_block->prev = node;
+        node->zl = zl;
         ql->len++;
+
+        if (node->count == 0 || ziplist_find(node->zl, pivot, pivot_size) == NULL) {
+            if (node->count == 0) {
+                quicklist_unlink_node(ql, node);
+            }
+            node = new_block;
+        }
     }
-    node->zl = ziplist_insert(zl, pivot, pivot_size, value, value_len, before);
+    node->zl = ziplist_insert(node->zl, pivot, pivot_size, value, value_len, before);
+    node->sz = ZL_BYTES(node->zl);
+    node->count++;
     ql->count++;
     return 1;
 }

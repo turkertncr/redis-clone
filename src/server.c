@@ -40,7 +40,7 @@ int init_socket(hash_table *ht)
     SOCKET server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
     struct pollfd fds[MAX_CONNECTIONS + 1];
-    char buff[1024];
+    char buff[16384];
     int nfds = 1;
 #ifdef _WIN32
     int client_size;
@@ -120,7 +120,7 @@ int init_socket(hash_table *ht)
             if (f->fd == -1) continue;
 
             if (f->revents & POLLIN) {
-                size_t read_bytes = recv(f->fd, buff, sizeof(buff) - 1, 0);
+                long read_bytes = recv(f->fd, buff, sizeof(buff) - 1, 0);
                 if (read_bytes <= 0) {
                     closesocket(f->fd);
                     f->fd = -1;
@@ -128,7 +128,7 @@ int init_socket(hash_table *ht)
                     buff[read_bytes] = '\0';
                     printf("Received: %s \n", buff);
 
-                    resp_object *resp_obj = parse_resp(buff);
+                    resp_object *resp_obj = parse_resp(buff, buff + read_bytes);
                     if (resp_obj == NULL) {
                         closesocket(f->fd);
                         f->fd = -1;

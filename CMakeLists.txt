@@ -12,8 +12,6 @@ add_executable(redis_clone main.c
         src/redis_object.c
         include/server.h
         src/server.c
-        include/command_handler.h
-        src/command_handler.c
         include/data_types/quick_list.h
         include/data_types/zip_list.h
         src/data_types/zip_list.c
@@ -30,6 +28,8 @@ add_executable(redis_clone main.c
         src/repl.c
         include/client.h
         src/client.c
+        src/command_handler.c
+        include/command_handler.h
 )
 
 target_include_directories(redis_clone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

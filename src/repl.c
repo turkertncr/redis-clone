@@ -43,7 +43,7 @@ static void execute(char *args[], size_t args_size) {
     sds resp = sdsnewlen(ctx.buf, ctx.len);
     free(ctx.buf);
 
-    resp_object *resp_obj = parse_resp(resp);
+    resp_object *resp_obj = parse_resp(resp, resp + sdslen(resp));
     execute_command(resp_obj, ht, response, response_size);
     printf("%s\n", response);
 

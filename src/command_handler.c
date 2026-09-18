@@ -1,8 +1,8 @@
-#include <ctype.h>
+#include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include <include/command_handler.h>
 #include <include/redis_object.h>
@@ -10,17 +10,11 @@
 #include <include/data_types/sorted_set.h>
 #include <include/data_types/quick_list.h>
 
-#define STRCMP(str1, str2) strcmp(str1, str2) == 0
-
-static sds toupper_case(sds str) {
-    if (str == NULL) return NULL;
-
-    size_t len = sdslen(str);
-    for (size_t i = 0; i < len; i++) {
-        str[i] = (char) toupper((unsigned char) str[i]);
-    }
-    return str;
-}
+#if defined(_WIN32) || defined(_WIN64)
+#define strcasecmp _stricmp
+#else
+#include <strings.h>
+#endif
 
 size_t append_fmt(char *response, size_t response_size, size_t offset, const char *fmt, ...) {
     if (offset >= response_size) return offset;
@@ -36,6 +30,18 @@ size_t append_fmt(char *response, size_t response_size, size_t offset, const cha
     return offset + (size_t) written;
 }
 
+size_t append_b(char *buf, size_t capacity, size_t len, sds val) {
+    if (val == NULL) return append_fmt(buf, capacity, len, "$-1\r\n");
+    return append_fmt(buf, capacity, len, "$%u\r\n%s\r\n", sdslen(val), val);
+}
+
+static size_t append_bulk(char *buf, size_t capacity, size_t len, const redis_object *redis_obj) {
+    if (redis_obj == NULL || redis_obj->type != OBJ_STRING) {
+        return append_fmt(buf, capacity, len, "$-1\r\n");
+    }
+    return append_b(buf, capacity, len, (sds) redis_obj->ptr);
+}
+
 static void err_wrong_args(char *response, size_t response_size, const char *cmd_name) {
     snprintf(response, response_size, "-ERR wrong number of arguments for '%s' command\r\n", cmd_name);
 }
@@ -44,30 +50,167 @@ static void err_wrongtype(char *response, size_t response_size) {
     snprintf(response, response_size, "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
 }
 
-size_t append_b(char *buf, size_t capacity, size_t len, sds val) {
-    if (val == NULL) return append_fmt(buf, capacity, len, "$-1\r\n");;
-    return append_fmt(buf, capacity, len, "$%u\r\n%s\r\n", sdslen(val), val);
-}
-
-static size_t append_bulk(char *buf, size_t capacity, size_t len, const redis_object *redis_obj) {
-    if (redis_obj == NULL || redis_obj->type != OBJ_STRING) {
-        return append_fmt(buf, capacity, len, "$-1\r\n");
-    }
-    sds value = (sds) redis_obj->ptr;
-    return append_b(buf, capacity, len, value);
-}
-
-static int check_args_len(int min, const resp_object* resp_obj, const char* cmd, char *response, size_t response_size) {
-    if (resp_obj->array.len < min) {
-        err_wrong_args(response, response_size, cmd);
-        return 0;
-    }
+static int parse_double(sds s, double *out) {
+    char *end;
+    errno = 0;
+    double v = strtod(s, &end);
+    if (end == s || *end != '\0' || errno == ERANGE || isnan(v)) return 0;
+    *out = v;
     return 1;
 }
 
-static void incr_decr(hash_table *ht, sds key, long long delta, char *response, size_t response_size) {
-    redis_object *redis_obj = (redis_object *) ht_get(ht, key);
+static redis_object *lookup_typed(hash_table *db, sds key, redis_type type, int create_if_missing,
+                                  const char *missing_reply, char *response, size_t response_size) {
+    redis_object *result = lookup_redis_object(db, key);
+    if (result == NULL) {
+        if (!create_if_missing) {
+            snprintf(response, response_size, "%s", missing_reply);
+            return NULL;
+        }
+        result = create_redis_object(type, NULL, -1);
+        if (result == NULL) {
+            snprintf(response, response_size, "-ERR out of memory\r\n");
+            return NULL;
+        }
+        ht_put(db, key, result);
+        return result;
+    }
+    if (result->type != type) {
+        err_wrongtype(response, response_size);
+        return NULL;
+    }
+    return result;
+}
 
+static void hgetall_append(sds field, void *value, void *user_data) {
+    getall_ctx *ctx = (getall_ctx *) user_data;
+    sds field_value = (sds) value;
+    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
+        "$%u\r\n%s\r\n$%u\r\n%s\r\n", sdslen(field), field, sdslen(field_value), field_value);
+}
+
+static void sgetall_append(sds member, void *value, void *user_data) {
+    (void) value;
+    getall_ctx *ctx = (getall_ctx *) user_data;
+    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
+        "$%u\r\n%s\r\n", sdslen(member), member);
+}
+
+static void zrange_append(sl_node *node, void *user_data) {
+    getall_ctx *ctx = (getall_ctx *) user_data;
+    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
+        "$%u\r\n%s\r\n", sdslen(node->member), node->member);
+}
+
+static void zrange_count(sl_node *node, void *user_data) {
+    (void) node;
+    (void) user_data;
+}
+
+static void lrange_count(struct zlentry *entry, void *user_data) {
+    (void) entry;
+    (void) user_data;
+}
+
+static void lrange_append(struct zlentry *entry, void *user_data) {
+    getall_ctx *ctx = (getall_ctx *) user_data;
+    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
+        "$%u\r\n%.*s\r\n", entry->currlen, entry->currlen, entry->data);
+}
+
+static void ping_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    (void) db;
+    if (args->array.len >= 2) {
+        sds msg = get_bulk_at(args, 1);
+        snprintf(response, response_size, "$%u\r\n%s\r\n", sdslen(msg), msg);
+    } else {
+        snprintf(response, response_size, "+PONG\r\n");
+    }
+}
+
+static void echo_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    (void) db;
+    sds msg = get_bulk_at(args, 1);
+    snprintf(response, response_size, "$%u\r\n%s\r\n", sdslen(msg), msg);
+}
+
+static void exists_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    int count = 0;
+    for (int i = 1; i < args->array.len; i++) {
+        if (lookup_redis_object(db, get_bulk_at(args, i)) != NULL) count++;
+    }
+    snprintf(response, response_size, ":%d\r\n", count);
+}
+
+static void del_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    int deleted = 0;
+    for (int i = 1; i < args->array.len; i++) {
+        deleted += ht_delete(db, get_bulk_at(args, i));
+    }
+    snprintf(response, response_size, ":%d\r\n", deleted);
+}
+
+static void expire_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, 1));
+    if (redis_obj == NULL) {
+        snprintf(response, response_size, ":0\r\n");
+        return;
+    }
+    long long sec = strtoll(get_bulk_at(args, 2), NULL, 10);
+    redis_obj->expires_at = current_time_ms() + sec * 1000;
+    snprintf(response, response_size, ":1\r\n");
+}
+
+static void ttl_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, 1));
+    if (redis_obj == NULL) {
+        snprintf(response, response_size, ":-2\r\n");
+        return;
+    }
+    if (redis_obj->expires_at == -1) {
+        snprintf(response, response_size, ":-1\r\n");
+        return;
+    }
+    long long ttl = (redis_obj->expires_at - current_time_ms()) / 1000;
+    snprintf(response, response_size, ":%lld\r\n", ttl);
+}
+
+static void set_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = create_redis_object(OBJ_STRING, get_bulk_at(args, 2), -1);
+    ht_put(db, get_bulk_at(args, 1), redis_obj);
+    snprintf(response, response_size, "+OK\r\n");
+}
+
+static void mset_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    int argc = args->array.len;
+    if (argc % 2 == 0) {
+        err_wrong_args(response, response_size, "mset");
+        return;
+    }
+
+    for (int i = 1; i < argc; i += 2) {
+        redis_object *redis_obj = create_redis_object(OBJ_STRING, get_bulk_at(args, i + 1), -1);
+        ht_put(db, get_bulk_at(args, i), redis_obj);
+    }
+    snprintf(response, response_size, "+OK\r\n");
+}
+
+static void get_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_STRING, 0, "$-1\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+    append_bulk(response, response_size, 0, redis_obj);
+}
+
+static void mget_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    size_t offset = append_fmt(response, response_size, 0, "*%d\r\n", args->array.len - 1);
+    for (int i = 1; i < args->array.len; i++) {
+        redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, i));
+        offset = append_bulk(response, response_size, offset, redis_obj);
+    }
+}
+
+static void incr_decr(hash_table *db, sds key, long long delta, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_redis_object(db, key);
     if (redis_obj != NULL && redis_obj->type != OBJ_STRING) {
         snprintf(response, response_size, "-WRONGTYPE value is not a string\r\n");
         return;
@@ -89,8 +232,10 @@ static void incr_decr(hash_table *ht, sds key, long long delta, char *response, 
     snprintf(buf, sizeof(buf), "%lld", new_value);
 
     if (redis_obj == NULL) {
-        redis_obj = create_redis_object(OBJ_STRING, buf, -1);
-        ht_put(ht, key, redis_obj);
+        sds value = sdsnew(buf);
+        redis_obj = create_redis_object(OBJ_STRING, value, -1);
+        sdsfree(value);
+        ht_put(db, key, redis_obj);
     } else {
         sdsfree((sds) redis_obj->ptr);
         redis_obj->ptr = sdsnew(buf);
@@ -99,733 +244,403 @@ static void incr_decr(hash_table *ht, sds key, long long delta, char *response, 
     snprintf(response, response_size, ":%lld\r\n", new_value);
 }
 
-static void hgetall_append(sds field, void *value, void *user_data) {
-    getall_ctx *ctx = (getall_ctx *) user_data;
-    sds field_value = (sds) value;
-    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
-        "$%u\r\n%s\r\n$%u\r\n%s\r\n", sdslen(field), field, sdslen(field_value), field_value);
+static void incr_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    incr_decr(db, get_bulk_at(args, 1), 1, response, response_size);
 }
 
-static void sgetall_append(sds member, void* value, void *user_data) {
-    getall_ctx *ctx = (getall_ctx *) user_data;
-    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
-        "$%u\r\n%s\r\n", sdslen(member), member);
+static void decr_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    incr_decr(db, get_bulk_at(args, 1), -1, response, response_size);
 }
 
-static void zrange_append(sl_node* node, void *user_data) {
-    getall_ctx *ctx = (getall_ctx *) user_data;
-    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
-        "$%u\r\n%s\r\n", sdslen(node->member), node->member);
+static void incrby_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    long long delta = strtoll(get_bulk_at(args, 2), NULL, 10);
+    incr_decr(db, get_bulk_at(args, 1), delta, response, response_size);
 }
 
-static void zrange_count(sl_node* node, void *user_data) {
-    (void) node;
-    (void) user_data;
-}
+static void append_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    sds key = get_bulk_at(args, 1);
+    sds value = get_bulk_at(args, 2);
 
-static void lrange_append(struct zlentry *entry, void *user_data) {
-    getall_ctx *ctx = (getall_ctx *) user_data;
-    ctx->len = append_fmt(ctx->buf, ctx->capacity, ctx->len,
-        "$%u\r\n%.*s\r\n", entry->currlen, entry->currlen, entry->data);
-}
-
-void execute_command(resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
-    response[0] = '\0';
-
-    if (resp_obj->type != RESP_ARRAY || resp_obj->array.len == 0) {
+    redis_object *redis_obj = lookup_redis_object(db, key);
+    if (redis_obj == NULL) {
+        redis_obj = create_redis_object(OBJ_STRING, value, -1);
+        ht_put(db, key, redis_obj);
+        snprintf(response, response_size, ":%u\r\n", sdslen((sds) redis_obj->ptr));
+        return;
+    }
+    if (redis_obj->type != OBJ_STRING) {
+        err_wrongtype(response, response_size);
         return;
     }
 
-    sds cmd = toupper_case(get_bulk_at(resp_obj, 0));
+    sds existing_value = redis_obj->ptr;
+    sds new_value = sdscat(existing_value, value);
+    redis_obj->ptr = new_value;
+    sdsfree(existing_value);
 
-    if (handle_connection_commands(cmd, resp_obj, response, response_size)) return;
-    if (handle_key_commands(cmd, resp_obj, ht, response, response_size)) return;
-    if (handle_string_commands(cmd, resp_obj, ht, response, response_size)) return;
-    if (handle_hash_commands(cmd, resp_obj, ht, response, response_size)) return;
-    if (handle_set_commands(cmd, resp_obj, ht, response, response_size)) return;
-    if (handle_zset_commands(cmd, resp_obj, ht, response, response_size)) return;
-    if (handle_list_commands(cmd, resp_obj, ht, response, response_size)) return;
-
-    snprintf(response, response_size, "-ERR unknown command '%s'\r\n", cmd == NULL ? "" : cmd);
+    snprintf(response, response_size, ":%u\r\n", sdslen(new_value));
 }
 
-int handle_connection_commands(sds cmd, resp_object *resp_obj, char *response, size_t response_size) {
-    if (STRCMP(cmd, "PING")) {
-        if (check_args_len(2, resp_obj, "PING", response, response_size)) {
-            sds msg = get_bulk_at(resp_obj, 1);
-            snprintf(response, response_size, "$%d\r\n%s\r\n", sdslen(msg), msg);
-        } else {
-            snprintf(response, response_size, "+PONG\r\n");
-        }
-        return 1;
+static void hset_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    int argc = args->array.len;
+    if (argc % 2 != 0) {
+        err_wrong_args(response, response_size, "hset");
+        return;
     }
 
-    if (STRCMP(cmd, "ECHO")) {
-        if (!check_args_len(2, resp_obj, "ECHO", response, response_size)) return 1;
-        sds msg = get_bulk_at(resp_obj, 1);
-        snprintf(response, response_size, "$%d\r\n%s\r\n", sdslen(msg), msg);
-        return 1;
-    }
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 1, NULL, response, response_size);
+    if (redis_obj == NULL) return;
 
-    return 0;
+    hash_table *hash = redis_obj->ptr;
+    int added = 0;
+    for (int i = 2; i < argc; i += 2) {
+        sds field = get_bulk_at(args, i);
+        if (!ht_exists(hash, field)) added++;
+        ht_put(hash, field, sdsdup(get_bulk_at(args, i + 1)));
+    }
+    snprintf(response, response_size, ":%d\r\n", added);
 }
 
-int handle_key_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
+static void hget_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, "$-1\r\n", response, response_size);
+    if (redis_obj == NULL) return;
 
-    if (STRCMP(cmd, "EXISTS")) {
-        if (!check_args_len(2, resp_obj, "exists", response, response_size)) return 1;
-        int count = 0;
-        for (int i = 1; i < resp_obj->array.len; i++) {
-            sds key_at = get_bulk_at(resp_obj, i);
-            if (lookup_redis_object(ht, key_at) != NULL) count++;
-        }
-        snprintf(response, response_size, ":%d\r\n", count);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "DEL")) {
-        if (!check_args_len(2, resp_obj, "del", response, response_size)) return 1;
-        int deleted = 0;
-        for (int i = 1; i < resp_obj->array.len; i++) {
-            sds key_at = get_bulk_at(resp_obj, i);
-            deleted += ht_delete(ht, key_at);
-        }
-        snprintf(response, response_size, ":%d\r\n", deleted);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "EXPIRE")) {
-        if (!check_args_len(3, resp_obj, "expire", response, response_size)) return 1;
-        sds key = get_bulk_at(resp_obj, 1);
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        long long sec = strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
-        redis_obj->expires_at = current_time_ms() + sec * 1000;
-        snprintf(response, response_size, ":1\r\n");
-        return 1;
-    }
-
-    if (STRCMP(cmd, "TTL")) {
-        if (!check_args_len(2, resp_obj, "ttl", response, response_size)) return 1;
-        sds key = get_bulk_at(resp_obj, 1);
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":-2\r\n");
-            return 1;
-        }
-        if (redis_obj->expires_at == -1) {
-            snprintf(response, response_size, ":-1\r\n");
-            return 1;
-        }
-        long long ttl = (redis_obj->expires_at - current_time_ms()) / 1000;
-        snprintf(response, response_size, ":%lld\r\n", ttl);
-        return 1;
-    }
-
-    return 0;
+    sds field_value = ht_get(redis_obj->ptr, get_bulk_at(args, 2));
+    append_b(response, response_size, 0, field_value);
 }
 
-int handle_string_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
+static void hgetall_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, "*0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
 
-    if (STRCMP(cmd, "SET")) {
-        if (!check_args_len(3, resp_obj, "set", response, response_size)) return 1;
-        sds key = get_bulk_at(resp_obj, 1);
-        sds value = get_bulk_at(resp_obj, 2);
-        redis_object *redis_obj = create_redis_object(OBJ_STRING, value, -1);
-
-        ht_put(ht, key, redis_obj);
-        snprintf(response, response_size, "+OK\r\n");
-        return 1;
-    }
-
-    if (STRCMP(cmd, "MSET")) {
-        int array_len = resp_obj->array.len;
-        if (!check_args_len(3, resp_obj, "mset", response, response_size)) return 1;
-        if ((array_len & 1) != 1) {
-            err_wrong_args(response, response_size, "mset");
-            return 1;
-        }
-
-        for (int i = 1; i < array_len; i += 2) {
-            sds key = get_bulk_at(resp_obj, i);
-            sds value = get_bulk_at(resp_obj, i + 1);
-            redis_object *redis_obj = create_redis_object(OBJ_STRING, value, -1);
-            ht_put(ht, key, redis_obj);
-        }
-
-        snprintf(response, response_size, "+OK\r\n");
-        return 1;
-    }
-
-    if (STRCMP(cmd, "GET")) {
-        if (!check_args_len(2, resp_obj, "get", response, response_size)) return 1;
-        sds key = get_bulk_at(resp_obj, 1);
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-
-        if (redis_obj != NULL && redis_obj->type != OBJ_STRING) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        append_bulk(response, response_size, 0, redis_obj);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "MGET")) {
-        if (!check_args_len(2, resp_obj, "mget", response, response_size)) return 1;
-        size_t offset = append_fmt(response, response_size, 0, "*%d\r\n", resp_obj->array.len - 1);
-
-        for (int i = 1; i < resp_obj->array.len; i++) {
-            sds key_at = get_bulk_at(resp_obj, i);
-            redis_object *redis_obj = lookup_redis_object(ht, key_at);
-            offset = append_bulk(response, response_size, offset, redis_obj);
-        }
-        return 1;
-    }
-
-    if (STRCMP(cmd, "INCR")) {
-        if (!check_args_len(2, resp_obj, "incr", response, response_size)) return 1;
-        incr_decr(ht, get_bulk_at(resp_obj, 1), 1, response, response_size);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "DECR")) {
-        if (!check_args_len(2, resp_obj, "decr", response, response_size)) return 1;
-        incr_decr(ht, get_bulk_at(resp_obj, 1), -1, response, response_size);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "INCRBY")) {  // INCRBY key delta
-        if (!check_args_len(3, resp_obj, "incrby", response, response_size)) return 1;
-        long long delta = strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
-        incr_decr(ht, get_bulk_at(resp_obj, 1), delta, response, response_size);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "APPEND")) {
-        if (!check_args_len(3, resp_obj, "append", response, response_size)) return 1;
-
-        sds key = get_bulk_at(resp_obj, 1);
-        sds value = get_bulk_at(resp_obj, 2);
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-
-        if (redis_obj == NULL) {
-            redis_obj = create_redis_object(OBJ_STRING, value, -1);
-            ht_put(ht, key, redis_obj);
-            snprintf(response, response_size, ":%u\r\n", sdslen((sds) redis_obj->ptr));
-            return 1;
-        }
-
-        if (redis_obj->type != OBJ_STRING) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        sds existing_value = redis_obj->ptr;
-        sds new_value = sdscat(existing_value, value);
-        redis_obj->ptr = new_value;
-        sdsfree(existing_value);
-
-        snprintf(response, response_size, ":%u\r\n", sdslen(new_value));
-        return 1;
-    }
-
-    return 0;
+    hash_table *hash = redis_obj->ptr;
+    getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
+    ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", hash->size * 2);
+    ht_foreach(hash, hgetall_append, &ctx);
 }
 
-int handle_hash_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
-    sds key = get_bulk_at(resp_obj, 1);
+static void hdel_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
 
-    int array_len = resp_obj->array.len;
-    if (STRCMP(cmd, "HSET")) {
-        if (!check_args_len(4, resp_obj, "hset", response, response_size)) return 1;
-
-        hash_table *hash = 0;
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            redis_obj = create_redis_object(OBJ_HASH, hash, -1);
-            ht_put(ht, key, redis_obj);
-            hash = redis_obj->ptr;
-        } else {
-            if (redis_obj->type != OBJ_HASH) {
-                err_wrongtype(response, response_size);
-                return 1;
-            }
-            hash = redis_obj->ptr;
-        }
-
-        int added = 0;
-        for (int i = 2; i < array_len; i+=2) {
-            sds field = get_bulk_at(resp_obj, i);
-
-            if (i + 1 >= array_len) {
-                err_wrong_args(response, response_size, "hset");
-                return 1;
-            }
-
-            sds value = get_bulk_at(resp_obj, i + 1);
-            if (!ht_exists(hash, field)) added++;
-            ht_put(hash, field, sdsdup(value));
-        }
-
-        snprintf(response, response_size, ":%d\r\n", added);
-        return 1;
+    hash_table *hash = redis_obj->ptr;
+    int del = 0;
+    for (int i = 2; i < args->array.len; i++) {
+        if (ht_delete(hash, get_bulk_at(args, i))) del++;
     }
-
-    if (STRCMP(cmd, "HGET")) {
-        if (!check_args_len(3, resp_obj, "hget", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, "$-1\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_HASH) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        sds field = get_bulk_at(resp_obj, 2);
-        sds field_value = ht_get(redis_obj->ptr, field);
-
-        if (field_value == NULL) {
-            snprintf(response, response_size, "$-1\r\n");
-        } else {
-            snprintf(response, response_size, "$%u\r\n%s\r\n", sdslen(field_value), field_value);
-        }
-        return 1;
-    }
-
-    if (STRCMP(cmd, "HGETALL")) {
-        if (!check_args_len(2, resp_obj, "hgetall", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, "*0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_HASH) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        hash_table *hash = redis_obj->ptr;
-        getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
-        ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", hash->size * 2);
-        ht_foreach(hash, hgetall_append, &ctx);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "HDEL")) {
-        if (!check_args_len(3, resp_obj, "hdel", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_HASH) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        hash_table *hash = redis_obj->ptr;
-
-        int del = 0;
-        for (int i = 2; i < array_len; i++) {
-            sds field = get_bulk_at(resp_obj, i);
-            if (ht_delete(hash, field)) del++;
-        }
-        snprintf(response, response_size, ":%d\r\n", del);
-        return 1;
-    }
-
-    return 0;
+    snprintf(response, response_size, ":%d\r\n", del);
 }
 
-int handle_set_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
-    sds key = get_bulk_at(resp_obj, 1);
+static void sadd_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 1, NULL, response, response_size);
+    if (redis_obj == NULL) return;
 
-    int array_len = resp_obj->array.len;
-    if (STRCMP(cmd, "SADD")) {
-        if (!check_args_len(3, resp_obj, "sadd", response, response_size)) return 1;
-
-        int count = 0;
-        set *s = 0;
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            redis_obj = create_redis_object(OBJ_SET, s, -1);
-            ht_put(ht, key, redis_obj);
-            s = (set*) redis_obj->ptr;
-        } else {
-            if (redis_obj->type != OBJ_SET) {
-                err_wrongtype(response, response_size);
-                return 1;
-            }
-            s = (set*) redis_obj->ptr;
-        }
-
-        for (int i = 2; i < array_len; i++) {
-            sds mem = get_bulk_at(resp_obj, i);
-            if (set_add(s, mem)) count++;
-        }
-
-        snprintf(response, response_size, ":%d\r\n", count);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "SREM")) {
-        if (!check_args_len(3, resp_obj, "srem", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_SET) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        int del = 0;
-        set *s = (set*) redis_obj->ptr;
-        for (int i = 2; i < array_len; i++) {
-            sds mem = get_bulk_at(resp_obj, i);
-            if (set_remove(s, mem)) del++;
-        }
-        snprintf(response, response_size, ":%d\r\n", del);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "SISMEMBER")) {
-        if (!check_args_len(3, resp_obj, "sismember", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_SET) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        set *s = (set*) redis_obj->ptr;
-        sds mem = get_bulk_at(resp_obj, 2);
-        int is_member = set_contains(s, mem);
-
-        snprintf(response, response_size, ":%d\r\n", is_member);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "SMEMBERS")) {
-        if (!check_args_len(2, resp_obj, "smembers", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, "*0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_SET) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        set *s = (set*) redis_obj->ptr;
-
-        getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
-        ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", s->size);
-        set_foreach(s, sgetall_append, &ctx);
-        return 1;
-    }
-
-    return 0;
-}
-
-int handle_zset_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
-
-    sds key = get_bulk_at(resp_obj, 1);
-
-    int array_len = resp_obj->array.len;
-    if (STRCMP(cmd, "ZADD")) {
-        if (!check_args_len(4, resp_obj, "zadd", response, response_size)) return 1;
-
-        if (array_len % 2 != 0) {
-            err_wrong_args(response, response_size, "zadd");
-            return 1;
-        }
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            redis_obj = create_redis_object(OBJ_ZSET, NULL, -1);
-            ht_put(ht, key, redis_obj);
-        } else {
-            if (redis_obj->type != OBJ_ZSET) {
-                err_wrongtype(response, response_size);
-                return 1;
-            }
-        }
-
-        int count = 0;
-        zset *zs = redis_obj->ptr;
-        for (int i = 2; i < array_len; i+=2) {
-            sds member = get_bulk_at(resp_obj, i);
-            double score = strtof(get_bulk_at(resp_obj, i + 1), NULL);
-            if (zset_add(zs, score, member)) count++;
-        }
-        snprintf(response, response_size, ":%d\r\n", count);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "ZREM")) {
-        if (!check_args_len(3, resp_obj, "zrem", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_ZSET) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        int count = 0;
-        zset *zs = redis_obj->ptr;
-        for (int i = 2; i < array_len; i++) {
-            sds member = get_bulk_at(resp_obj, i);
-            if (zset_rem(zs, member)) count++;
-        }
-        snprintf(response, response_size, ":%d\r\n", count);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "ZRANGE")) {
-        if (!check_args_len(4, resp_obj, "zrange", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, "*0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_ZSET) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        zset *zs = redis_obj->ptr;
-
-        double min = strtof(get_bulk_at(resp_obj, 2), NULL);
-        double max = strtof(get_bulk_at(resp_obj, 3), NULL);
-
-        int count = zset_range_by_score(zs, min, max, zrange_count, NULL);
-
-        getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
-        ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", count);
-        zset_range_by_score(zs, min, max, zrange_append, &ctx);
-        return 1;
-    }
-
-    if (STRCMP(cmd, "ZSCORE")) {
-        if (!check_args_len(3, resp_obj, "zscore", response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, "$-1\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_ZSET) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        zset *zs = redis_obj->ptr;
-        sds member = get_bulk_at(resp_obj, 2);
-
-        double score = zset_find(zs, member);
-        if (score == -1) {
-            snprintf(response, response_size, "$-1\r\n");
-        } else {
-            char buf[32];
-            int len = snprintf(buf, sizeof(buf), "%g", score);
-            snprintf(response, response_size, "$%d\r\n%s\r\n", len, buf);
-        }
-        return 1;
-    }
-
-    return 0;
-}
-
-static int list_push(const char *cmd_name, sds key, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size, quicklist_push_fn fn, int create_if_missing) {
-    if (!check_args_len(3, resp_obj, cmd_name, response, response_size)) return 1;
-
-    redis_object *redis_obj = lookup_redis_object(ht, key);
-    if (redis_obj == NULL) {
-        if (!create_if_missing) {
-            snprintf(response, response_size, "-The list doesnt exist\r\n");
-            return 1;
-        }
-        redis_obj = create_redis_object(OBJ_LIST, NULL, -1);
-        ht_put(ht, key, redis_obj);
-    } else if (redis_obj->type != OBJ_LIST) {
-        err_wrongtype(response, response_size);
-        return 1;
-    }
-
-    ql *ql = redis_obj->ptr;
-    int array_len = resp_obj->array.len;
-
+    set *s = redis_obj->ptr;
     int count = 0;
-    for (int i = 2; i < array_len; i++) {
-        sds value = get_bulk_at(resp_obj, i);
-        if (fn(ql, value)) count++;
+    for (int i = 2; i < args->array.len; i++) {
+        if (set_add(s, get_bulk_at(args, i))) count++;
     }
-    snprintf(response, response_size, "$%d\r\n", count);
-    return 1;
+    snprintf(response, response_size, ":%d\r\n", count);
 }
 
-static int list_pop(const char *cmd_name, sds key, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size, quicklist_pop_fn fn) {
-    if (!check_args_len(3, resp_obj, cmd_name, response, response_size)) return 1;
+static void srem_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
 
-    redis_object *redis_obj = lookup_redis_object(ht, key);
-    if (redis_obj == NULL) {
-        snprintf(response, response_size, ":0\r\n");
-    } else {
-        if (redis_obj->type != OBJ_LIST) {
-            err_wrongtype(response, response_size);
-            return 1;
+    set *s = redis_obj->ptr;
+    int del = 0;
+    for (int i = 2; i < args->array.len; i++) {
+        if (set_remove(s, get_bulk_at(args, i))) del++;
+    }
+    snprintf(response, response_size, ":%d\r\n", del);
+}
+
+static void sismember_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    int is_member = set_contains(redis_obj->ptr, get_bulk_at(args, 2));
+    snprintf(response, response_size, ":%d\r\n", is_member);
+}
+
+static void smembers_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, "*0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    set *s = redis_obj->ptr;
+    getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
+    ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", s->size);
+    set_foreach(s, sgetall_append, &ctx);
+}
+
+static void zadd_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    int argc = args->array.len;
+    if (argc % 2 != 0) {
+        err_wrong_args(response, response_size, "zadd");
+        return;
+    }
+
+    for (int i = 2; i < argc; i += 2) {
+        double tmp;
+        if (!parse_double(get_bulk_at(args, i), &tmp)) {
+            snprintf(response, response_size, "-ERR value is not a valid float\r\n");
+            return;
         }
     }
 
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 1, NULL, response, response_size);
+    if (redis_obj == NULL) return;
+
+    zset *zs = redis_obj->ptr;
+    int count = 0;
+    for (int i = 2; i < argc; i += 2) {
+        double score;
+        parse_double(get_bulk_at(args, i), &score);
+        if (zset_add(zs, score, get_bulk_at(args, i + 1))) count++;
+    }
+    snprintf(response, response_size, ":%d\r\n", count);
+}
+
+static void zrem_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    zset *zs = redis_obj->ptr;
+    int count = 0;
+    for (int i = 2; i < args->array.len; i++) {
+        if (zset_rem(zs, get_bulk_at(args, i))) count++;
+    }
+    snprintf(response, response_size, ":%d\r\n", count);
+}
+
+static void zrangebyscore_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, "*0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    double min, max;
+    if (!parse_double(get_bulk_at(args, 2), &min) || !parse_double(get_bulk_at(args, 3), &max)) {
+        snprintf(response, response_size, "-ERR min or max is not a float\r\n");
+        return;
+    }
+
+    zset *zs = redis_obj->ptr;
+    int count = zset_range_by_score(zs, min, max, zrange_count, NULL);
+
+    getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
+    ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", count);
+    zset_range_by_score(zs, min, max, zrange_append, &ctx);
+}
+
+static void zscore_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, "$-1\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    double score;
+    if (!zset_find(redis_obj->ptr, get_bulk_at(args, 2), &score)) {
+        snprintf(response, response_size, "$-1\r\n");
+        return;
+    }
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%.17g", score);
+    snprintf(response, response_size, "$%d\r\n%s\r\n", len, buf);
+}
+
+static void list_push(resp_object *args, hash_table *db, char *response, size_t response_size,
+                      quicklist_push_fn fn, int create_if_missing) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, create_if_missing,
+                                           "-The list doesnt exist\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
     ql *ql = redis_obj->ptr;
-    int count = (int)strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
+    int count = 0;
+    for (int i = 2; i < args->array.len; i++) {
+        if (fn(ql, get_bulk_at(args, i))) count++;
+    }
+    snprintf(response, response_size, ":%d\r\n", count);
+}
+
+static void list_pop(resp_object *args, hash_table *db, char *response, size_t response_size, quicklist_pop_fn fn) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    ql *ql = redis_obj->ptr;
+    int count = (int) strtoll(get_bulk_at(args, 2), NULL, 10);
     int deleted = 0;
-    for (int i = 2; i < count; i++) {
+    for (int i = 0; i < count; i++) {
         if (fn(ql)) deleted++;
     }
     snprintf(response, response_size, ":%d\r\n", deleted);
+}
+
+static void lpush_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    list_push(args, db, response, response_size, quicklist_push_head, 1);
+}
+
+static void rpush_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    list_push(args, db, response, response_size, quicklist_push_tail, 1);
+}
+
+static void lpushx_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    list_push(args, db, response, response_size, quicklist_push_head, 0);
+}
+
+static void rpushx_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    list_push(args, db, response, response_size, quicklist_push_tail, 0);
+}
+
+static void lpop_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    list_pop(args, db, response, response_size, quicklist_pop_head);
+}
+
+static void rpop_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    list_pop(args, db, response, response_size, quicklist_pop_tail);
+}
+
+static void linsert_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    ql *ql = redis_obj->ptr;
+    int before = strcasecmp(get_bulk_at(args, 2), "BEFORE") == 0;
+    sds pivot = get_bulk_at(args, 3);
+    sds value = get_bulk_at(args, 4);
+
+    if (!quicklist_insert(ql, pivot, sdslen(pivot), value, before)) {
+        snprintf(response, response_size, ":-1\r\n");
+    } else {
+        snprintf(response, response_size, ":%lu\r\n", ql->count);
+    }
+}
+
+static void llen_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    snprintf(response, response_size, ":%lu\r\n", ((ql *) redis_obj->ptr)->count);
+}
+
+static void lrem_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    sds value = get_bulk_at(args, 2);
+    int count = (int) strtoll(get_bulk_at(args, 3), NULL, 10);
+    int del = quicklist_remove(redis_obj->ptr, value, count);
+    snprintf(response, response_size, ":%d\r\n", del);
+}
+
+static void lrange_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, "*0\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    int start = (int) strtoll(get_bulk_at(args, 2), NULL, 10);
+    int stop = (int) strtoll(get_bulk_at(args, 3), NULL, 10);
+    ql *ql = redis_obj->ptr;
+
+    int count = quicklist_range(ql, start, stop, lrange_count, NULL);
+
+    getall_ctx ctx = { .buf = response, .capacity = response_size, .len = 0 };
+    ctx.len = append_fmt(response, response_size, ctx.len, "*%d\r\n", count);
+    quicklist_range(ql, start, stop, lrange_append, &ctx);
+}
+
+static void lindex_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, "$-1\r\n", response, response_size);
+    if (redis_obj == NULL) return;
+
+    int index = (int) strtoll(get_bulk_at(args, 2), NULL, 10);
+    struct zlentry *entry = quicklist_get_at(redis_obj->ptr, index);
+    if (entry == NULL) {
+        snprintf(response, response_size, "-Index out of bounds\r\n");
+        return;
+    }
+    snprintf(response, response_size, "$%u\r\n%.*s\r\n", entry->currlen, (int) entry->currlen, entry->data);
+}
+
+static const command commands[] = {
+    {"PING",          -1, ping_command},
+    {"ECHO",           2, echo_command},
+
+    {"EXISTS",        -2, exists_command},
+    {"DEL",           -2, del_command},
+    {"EXPIRE",         3, expire_command},
+    {"TTL",            2, ttl_command},
+
+    {"SET",            3, set_command},
+    {"MSET",          -3, mset_command},
+    {"GET",            2, get_command},
+    {"MGET",          -2, mget_command},
+    {"INCR",           2, incr_command},
+    {"DECR",           2, decr_command},
+    {"INCRBY",         3, incrby_command},
+    {"APPEND",         3, append_command},
+
+    {"HSET",          -4, hset_command},
+    {"HGET",           3, hget_command},
+    {"HGETALL",        2, hgetall_command},
+    {"HDEL",          -3, hdel_command},
+
+    {"SADD",          -3, sadd_command},
+    {"SREM",          -3, srem_command},
+    {"SISMEMBER",      3, sismember_command},
+    {"SMEMBERS",       2, smembers_command},
+
+    {"ZADD",          -4, zadd_command},
+    {"ZREM",          -3, zrem_command},
+    {"ZRANGEBYSCORE",  4, zrangebyscore_command},
+    {"ZSCORE",         3, zscore_command},
+
+    {"LPUSH",         -3, lpush_command},
+    {"RPUSH",         -3, rpush_command},
+    {"LPUSHX",        -3, lpushx_command},
+    {"RPUSHX",        -3, rpushx_command},
+    {"LPOP",           3, lpop_command},
+    {"RPOP",           3, rpop_command},
+    {"LINSERT",        5, linsert_command},
+    {"LLEN",           2, llen_command},
+    {"LREM",           4, lrem_command},
+    {"LRANGE",         4, lrange_command},
+    {"LINDEX",         3, lindex_command},
+};
+
+static const size_t ncmd = sizeof(commands) / sizeof(commands[0]);
+
+static const command *lookup_command(sds name) {
+    for (size_t i = 0; i < ncmd; i++) {
+        if (strcasecmp(name, commands[i].name) == 0) {
+            return &commands[i];
+        }
+    }
+    return NULL;
+}
+
+static int validate_cmd_args(const resp_object *resp_obj) {
+    for (int i = 0; i < resp_obj->array.len; i++) {
+        const resp_object *arg = resp_obj->array.ptr[i];
+        if (arg == NULL || arg->type != RESP_BULK || arg->bulk == NULL) return 0;
+    }
     return 1;
 }
 
-int handle_list_commands(sds cmd, resp_object *resp_obj, hash_table *ht, char *response, size_t response_size) {
-    sds key = get_bulk_at(resp_obj, 1);
-
-    if (STRCMP(cmd, "LPUSH")) return list_push("lpush", key, resp_obj, ht, response, response_size, quicklist_push_head, 1);
-    if (STRCMP(cmd, "RPUSH")) return list_push("rpush", key, resp_obj, ht, response, response_size, quicklist_push_tail, 1);
-    if (STRCMP(cmd, "LPUSHX")) return list_push("lpushx", key, resp_obj, ht, response, response_size, quicklist_push_head, 0);
-    if (STRCMP(cmd, "RPUSHX")) return list_push("rpushx", key, resp_obj, ht, response, response_size, quicklist_push_tail, 0);
-    if (STRCMP(cmd, "LPOP")) return list_pop("lpop", key, resp_obj, ht, response, response_size, quicklist_pop_head);
-    if (STRCMP(cmd, "RPOP")) return list_pop("rpop", key, resp_obj, ht, response, response_size, quicklist_pop_tail);
-    if (STRCMP(cmd, "LINSERT")) {
-        if (!check_args_len(5, resp_obj, cmd, response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_LIST) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        ql *ql = redis_obj->ptr;
-        sds where = toupper_case(get_bulk_at(resp_obj, 2));
-        int before = STRCMP(where, "BEFORE");
-        sds pivot = get_bulk_at(resp_obj, 3);
-        sds value = get_bulk_at(resp_obj, 4);
-
-        if (!quicklist_insert(ql, pivot, sdslen(pivot), value, before)) {
-            snprintf(response, response_size, ":-1\r\n");
-        } else {
-            snprintf(response, response_size, ":%lu\r\n", ql->count);
-        }
-        return 1;
+void execute_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+    response[0] = '\0';
+    if (args->type != RESP_ARRAY || args->array.len == 0) return;
+    if (!validate_cmd_args(args)) {
+        snprintf(response, response_size, "-ERR Protocol error: expected bulk string arguments\r\n");
+        return;
     }
-    if (STRCMP(cmd, "LLEN")) {
-        if (!check_args_len(2, resp_obj, cmd, response, response_size)) return 1;
 
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL || redis_obj->type != OBJ_LIST) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-
-        ql *ql = redis_obj->ptr;
-        snprintf(response, response_size, ":%lu\r\n", ql->count);
-        return 1;
+    sds name = get_bulk_at(args, 0);
+    const command *cmd = lookup_command(name);
+    if (cmd == NULL) {
+        snprintf(response, response_size, "-ERR unknown command '%s'\r\n", name);
+        return;
     }
-    if (STRCMP(cmd, "LREM")) {
-        if (!check_args_len(4, resp_obj, cmd, response, response_size)) return 1;
 
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_LIST) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        sds value = get_bulk_at(resp_obj, 2);
-        int count = (int) strtoll(get_bulk_at(resp_obj, 3), NULL, 10);
-        ql *ql = redis_obj->ptr;
-
-        int del = quicklist_remove(ql, value, count);
-        snprintf(response, response_size, ":%d\r\n", del);
-        return 1;
+    int argc = args->array.len;
+    if ((cmd->arity > 0 && argc != cmd->arity) || (cmd->arity < 0 && argc < -cmd->arity)) {
+        err_wrong_args(response, response_size, cmd->name);
+        return;
     }
-    if (STRCMP(cmd, "LRANGE")) {
-        if (!check_args_len(4, resp_obj, cmd, response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_LIST) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        int start = (int) strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
-        int stop = (int) strtoll(get_bulk_at(resp_obj, 3), NULL, 10);
-        ql *ql = redis_obj->ptr;
-
-        getall_ctx ctx = { .len = 0, .buf = response, .capacity = response_size };
-        quicklist_range(ql, start, stop, lrange_append, &ctx);
-        return 1;
-    }
-    if (STRCMP(cmd, "LINDEX")) {
-        if (!check_args_len(3, resp_obj, cmd, response, response_size)) return 1;
-
-        redis_object *redis_obj = lookup_redis_object(ht, key);
-        if (redis_obj == NULL) {
-            snprintf(response, response_size, ":0\r\n");
-            return 1;
-        }
-        if (redis_obj->type != OBJ_LIST) {
-            err_wrongtype(response, response_size);
-            return 1;
-        }
-
-        int index = (int) strtoll(get_bulk_at(resp_obj, 2), NULL, 10);
-
-        ql *ql = redis_obj->ptr;
-        struct zlentry* entry = quicklist_get_at(ql, index);
-        if (!entry) {
-            snprintf(response, response_size, "-Index out of bounds\r\n");
-            return 1;
-        }
-        snprintf(response, response_size, "$%d\r\n%s\r\n", entry->currlen, (sds)entry->data);
-        return 1;
-    }
-    return 0;
+    cmd->fun(args, db, response, response_size);
 }
-
-

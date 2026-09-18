@@ -57,12 +57,13 @@ int zset_rem(zset *zset, sds mem) {
     return 0;
 }
 
-double zset_find(zset *zset, sds mem) {
-    if (!zset) return -1;
+int zset_find(zset *zset, sds mem, double *score_out) {
+    if (!zset) return 0;
     double *score = (double*) ht_get(zset->ht, mem);
-    return score ? *score : -1;
+    if (score == NULL) return 0;
+    if (score_out) *score_out = *score;
+    return 1;
 }
-
 void zset_incr(zset *zset, sds mem, double incr) {
     if (!zset) return;
 
