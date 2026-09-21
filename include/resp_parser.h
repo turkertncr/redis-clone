@@ -5,10 +5,6 @@
 #ifndef REDIS_CLONE_RESP_PARSER_H
 #define REDIS_CLONE_RESP_PARSER_H
 
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "data_types/redis_string.h"
 
 typedef enum {

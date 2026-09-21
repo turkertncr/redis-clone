@@ -30,6 +30,8 @@ add_executable(redis_clone main.c
         src/client.c
         src/command_handler.c
         include/command_handler.h
+        src/config.c
+        include/config.h
 )
 
 target_include_directories(redis_clone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

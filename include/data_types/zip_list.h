@@ -6,7 +6,7 @@
 typedef unsigned char* ziplist;
 
 
-/*
+/**
  * Ziplist layout
  * <zlbytes(4)> <zltail(4)> <zllen(2)> <entries...> <zlend(1)>
  *

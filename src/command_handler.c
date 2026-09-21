@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <include/command_handler.h>
 #include <include/redis_object.h>
@@ -15,6 +16,8 @@
 #else
 #include <strings.h>
 #endif
+
+static sds required_password = NULL;
 
 size_t append_fmt(char *response, size_t response_size, size_t offset, const char *fmt, ...) {
     if (offset >= response_size) return offset;
@@ -558,7 +561,7 @@ static void lindex_command(resp_object *args, hash_table *db, char *response, si
 }
 
 static const command commands[] = {
-    {"PING",          -1, ping_command},
+    {"PING",          -1, ping_command, CMD_NOAUTH},
     {"ECHO",           2, echo_command},
 
     {"EXISTS",        -2, exists_command},
@@ -622,7 +625,46 @@ static int validate_cmd_args(const resp_object *resp_obj) {
     return 1;
 }
 
-void execute_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
+void set_required_password(const char *password) {
+    sdsfree(required_password);
+    required_password = (password != NULL && password[0] != '\0') ? sdsnew(password) : NULL;
+}
+
+int auth_required(void) {
+    return required_password != NULL;
+}
+
+static int secure_eq(sds a, sds b) {
+    uint32_t alen = sdslen(a), blen = sdslen(b);
+    unsigned char diff = alen != blen;
+    for (uint32_t i = 0; i < alen && i < blen; i++) diff |= (unsigned char) (a[i] ^ b[i]);
+    return diff == 0;
+}
+
+static void auth_command(resp_object *args, client_ctx *client, char *response, size_t response_size) {
+    int argc = args->array.len;
+    if (argc != 2 && argc != 3) {
+        err_wrong_args(response, response_size, "auth");
+        return;
+    }
+    if (required_password == NULL) {
+        snprintf(response, response_size,
+            "-ERR AUTH <password> called without any password configured for the default user. "
+            "Are you sure your configuration is correct?\r\n");
+        return;
+    }
+
+    sds password = get_bulk_at(args, argc - 1);
+    int user_ok = argc == 2 || strcmp(get_bulk_at(args, 1), "default") == 0;
+    if (user_ok && secure_eq(password, required_password)) {
+        client->authenticated = 1;
+        snprintf(response, response_size, "+OK\r\n");
+    } else {
+        snprintf(response, response_size, "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
+    }
+}
+
+void execute_command(resp_object *args, hash_table *db, client_ctx *client, char *response, size_t response_size) {
     response[0] = '\0';
     if (args->type != RESP_ARRAY || args->array.len == 0) return;
     if (!validate_cmd_args(args)) {
@@ -631,7 +673,16 @@ void execute_command(resp_object *args, hash_table *db, char *response, size_t r
     }
 
     sds name = get_bulk_at(args, 0);
+    if (strcasecmp(name, "AUTH") == 0) {
+        auth_command(args, client, response, response_size);
+        return;
+    }
+
     const command *cmd = lookup_command(name);
+    if (required_password != NULL && !client->authenticated && (cmd == NULL || !(cmd->flags & CMD_NOAUTH))) {
+        snprintf(response, response_size, "-NOAUTH Authentication required.\r\n");
+        return;
+    }
     if (cmd == NULL) {
         snprintf(response, response_size, "-ERR unknown command '%s'\r\n", name);
         return;

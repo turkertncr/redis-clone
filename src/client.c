@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -56,8 +57,8 @@ int run_client() {
     }
 
     while (1) {
-        fgets(buf, sizeof(buf), stdin);
-        buf[strcspn(buf, "\n")] = '\0';
+        if (fgets(buf, sizeof(buf), stdin) == NULL) break;
+        buf[strcspn(buf, "\r\n")] = '\0';
 
         struct split splitted = split_cmd(buf);
         if (splitted.len == 0) {

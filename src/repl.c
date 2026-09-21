@@ -13,10 +13,10 @@ static hash_table *ht;
 struct split split_cmd(char *args) {
     struct split result = { .len = 0, .args = malloc(sizeof(char*) * SPLIT_MAX_ARGS) };
 
-    char *tok = strtok(args, " ");
+    char *tok = strtok(args, " \t\r\n");
     while (tok != NULL && result.len < SPLIT_MAX_ARGS) {
         result.args[result.len++] = tok;
-        tok = strtok(NULL, " ");
+        tok = strtok(NULL, " \t\r\n");
     }
 
     return result;
@@ -44,7 +44,8 @@ static void execute(char *args[], size_t args_size) {
     free(ctx.buf);
 
     resp_object *resp_obj = parse_resp(resp, resp + sdslen(resp));
-    execute_command(resp_obj, ht, response, response_size);
+    client_ctx local = {1}; // in-process REPL is trusted
+    execute_command(resp_obj, ht, &local, response, response_size);
     printf("%s\n", response);
 
     sdsfree(resp);

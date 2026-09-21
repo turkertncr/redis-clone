@@ -39,8 +39,9 @@ int zset_add(zset *zset, double score, sds mem) {
     *score_p = score;
     ht_put(zset->ht, mem, score_p);
 
-    if (existing == NULL) zset->size++;
-    return 1;
+    int ret = 0;
+    if (existing == NULL) { zset->size++; ret++; }
+    return ret;
 }
 
 int zset_rem(zset *zset, sds mem) {

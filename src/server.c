@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
@@ -22,15 +24,24 @@
 
 #include <include/server.h>
 #include <include/command_handler.h>
+#include <include/repl.h>
 
-void handle_client_request(const SOCKET* client_sock, resp_object* resp_obj, hash_table* ht)
+void handle_client_request(const SOCKET* client_sock, resp_object* resp_obj, hash_table* ht, client_ctx* client)
 {
     char response[16384];
-    execute_command(resp_obj, ht, response, sizeof(response));
+    execute_command(resp_obj, ht, client, response, sizeof(response));
 
     if (response[0] != '\0') {
         send(*client_sock, response, (size_t) strlen(response), 0);
     }
+}
+
+void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
+    closesocket(fds[i].fd);
+    fds[i] = fds[*nfds - 1];
+    clients[i] = clients[*nfds - 1];
+    fds[*nfds - 1].fd = -1;
+    (*nfds)--;
 }
 
 int init_socket(hash_table *ht)
@@ -40,6 +51,7 @@ int init_socket(hash_table *ht)
     SOCKET server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
     struct pollfd fds[MAX_CONNECTIONS + 1];
+    client_ctx clients[MAX_CONNECTIONS + 1];
     char buff[16384];
     int nfds = 1;
 #ifdef _WIN32
@@ -62,6 +74,17 @@ int init_socket(hash_table *ht)
     }
     printf("Socket created.\n");
 
+    int opt = 1;
+#ifdef _WIN32
+    // Windows için (Gerekirse SO_REUSEADDR yerine direkt geçerlidir)
+    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
+#else
+    // Linux/WSL için mutlak çözüm
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt SO_REUSEADDR failed");
+    }
+#endif
+
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
@@ -74,7 +97,7 @@ int init_socket(hash_table *ht)
     }
     printf("Bind done.\n");
 
-    listen(server_socket, 3);
+    listen(server_socket, 128);
     printf("Waiting for incoming connections on port %d...\n", PORT);
 
     client_size = sizeof(struct sockaddr_in);
@@ -96,48 +119,53 @@ int init_socket(hash_table *ht)
                 exit(EXIT_FAILURE);
             }
 
-            int added = 0;
-            for (int i = 1; i <= MAX_CONNECTIONS; i++) {
-                if (fds[i].fd == -1) {
-                    fds[i].fd = client_socket;
-                    fds[i].events = POLLIN;
-                    if (i >= nfds) {
-                        nfds = i + 1;
-                    }
-                    added = 1;
-                    break;
-                }
-            }
-
-            if (!added) {
+            if (nfds > MAX_CONNECTIONS) {
                 printf("Server full. Rejecting connection.\n");
                 closesocket(client_socket);
+            } else {
+            #ifdef _WIN32
+                u_long mode = 1;
+                ioctlsocket(client_socket, FIONBIO, &mode);
+            #else
+                int flags = fcntl(client_socket, F_GETFL, 0);
+                fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
+            #endif
+                fds[nfds].fd = client_socket;
+                fds[nfds].events = POLLIN;
+                fds[nfds].revents = 0;
+                clients[nfds].authenticated = !auth_required();
+                nfds++;
             }
         }
 
-        for (int i = 1; i <= MAX_CONNECTIONS; i++) {
+        for (int i = 1; i < nfds; i++) {
             struct pollfd *f = &fds[i];
-            if (f->fd == -1) continue;
 
             if (f->revents & POLLIN) {
                 long read_bytes = recv(f->fd, buff, sizeof(buff) - 1, 0);
                 if (read_bytes <= 0) {
-                    closesocket(f->fd);
-                    f->fd = -1;
+                    drop_client(fds, clients, &nfds, i--);
                 } else {
                     buff[read_bytes] = '\0';
-                    printf("Received: %s \n", buff);
 
-                    resp_object *resp_obj = parse_resp(buff, buff + read_bytes);
+                    resp_object *resp_obj = 0;
+                    if (buff[0] != '*' && buff[0] != '$') {
+                        struct split splitted = split_cmd(buff);
+                        getall_ctx ctx = build_resp(splitted.args, splitted.len);
+                        resp_obj = parse_resp(ctx.buf, ctx.buf + ctx.len);
+                        free(ctx.buf);
+                        free(splitted.args);
+                    } else {
+                        resp_obj = parse_resp(buff, buff + read_bytes);
+                    }
+
                     if (resp_obj == NULL) {
-                        closesocket(f->fd);
-                        f->fd = -1;
+                        drop_client(fds, clients, &nfds, i--);
                         continue;
                     }
 
                     if (resp_obj->type == RESP_nil) {
-                        closesocket(f->fd);
-                        f->fd = -1;
+                        drop_client(fds, clients, &nfds, i--);
                         free(resp_obj);
                         continue;
                     }
@@ -145,8 +173,7 @@ int init_socket(hash_table *ht)
                     size_t response_size = 16384;
                     char response[response_size];
 
-                    execute_command(resp_obj, ht, response, response_size);
-                    printf("%s\n", response);
+                    execute_command(resp_obj, ht, &clients[i], response, response_size);
 
                     send(fds[i].fd, response, strlen(response), 0);
                     free_respobj(resp_obj);
