@@ -10,11 +10,12 @@ typedef int SOCKET;
 #include <include/resp_parser.h>
 #include <include/data_types/hash_table.h>
 #include <include/command_handler.h>
+#include <include/queue.h>
 
 #define PORT 6379
 #define MAX_CONNECTIONS 10
 
 void handle_client_request(const SOCKET* client_sock, resp_object* resp_obj, hash_table* ht, client_ctx* client);
-int init_socket(hash_table* ht);
+int init_socket(hash_table* ht, queue *q);
 
 #endif //REDIS_CLONE_SERVER_H

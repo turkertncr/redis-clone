@@ -65,6 +65,7 @@ int zset_find(zset *zset, sds mem, double *score_out) {
     if (score_out) *score_out = *score;
     return 1;
 }
+
 void zset_incr(zset *zset, sds mem, double incr) {
     if (!zset) return;
 

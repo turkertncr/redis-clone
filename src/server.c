@@ -3,6 +3,8 @@
 #include <string.h>
 #include <fcntl.h>
 
+#include "include/queue.h"
+
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -44,9 +46,9 @@ void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
     (*nfds)--;
 }
 
-int init_socket(hash_table *ht)
+int init_socket(hash_table *ht, queue *q)
 {
-    if (ht == NULL) return 1;
+    if (!ht || !q) return 1;
 
     SOCKET server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
@@ -76,10 +78,8 @@ int init_socket(hash_table *ht)
 
     int opt = 1;
 #ifdef _WIN32
-    // Windows için (Gerekirse SO_REUSEADDR yerine direkt geçerlidir)
     setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
 #else
-    // Linux/WSL için mutlak çözüm
     if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("setsockopt SO_REUSEADDR failed");
     }
@@ -169,11 +169,11 @@ int init_socket(hash_table *ht)
                         free(resp_obj);
                         continue;
                     }
-
                     size_t response_size = 16384;
                     char response[response_size];
 
-                    execute_command(resp_obj, ht, &clients[i], response, response_size);
+                    const command *cmd =execute_command(resp_obj, ht, &clients[i], response, response_size);
+                    if (cmd && (cmd->flags & CMD_WRITE) && response[0] != '-') queue_push(q, sdsnew(buff));
 
                     send(fds[i].fd, response, strlen(response), 0);
                     free_respobj(resp_obj);

@@ -69,3 +69,21 @@ Since the server speaks standard RESP, you can also connect with the official `r
 ```sh
 redis-cli -p 6379
 ```
+
+
+## Benchmarking
+
+Uses the official `redis-benchmark` (on Windows, run it from WSL). Run the server with the empty `redis.conf` (no password), because `redis-benchmark` sends `AUTH` and its first command in one write, and the server reads one command per request.
+
+```sh
+# 8 connections; the built-in `-t` tests send inline commands, so pass the commands explicitly
+for cmd in "PING" "SET k:__rand_int__ value" "GET k:__rand_int__" "INCR c:__rand_int__" \
+           "HSET h:__rand_int__ f v" "SADD s:__rand_int__ m" "ZADD z:__rand_int__ 5 m" \
+           "LPUSH l:__rand_int__ v" "LRANGE l:__rand_int__ 0 9"; do
+  redis-benchmark -p 6379 -c 8 -n 100000 -r 1000 -q $cmd
+done
+```
+
+Example results (WSL, loopback, no pipelining): about 7.5k op/s with `-c 1` (limited by round-trip latency) and about 50k op/s with `-c 8` for every command above.
+
+Don't use `-P` above 1: the server handles one command per read. The server accepts at most 10 connections at a time, so keep `-c` at 9 or below.

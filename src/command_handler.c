@@ -11,6 +11,8 @@
 #include <include/data_types/sorted_set.h>
 #include <include/data_types/quick_list.h>
 
+#include "include/aof_handler.h"
+
 #if defined(_WIN32) || defined(_WIN64)
 #define strcasecmp _stricmp
 #else
@@ -178,10 +180,75 @@ static void ttl_command(resp_object *args, hash_table *db, char *response, size_
     snprintf(response, response_size, ":%lld\r\n", ttl);
 }
 
+static int parse_set_options(resp_object *args, char *response, size_t response_size, long long *ttl, int *flags) {
+    *flags = 0;
+    long long expire_ms = -1;
+
+    for (int i = 3; i < args->array.len; i++) {
+        sds tok = get_bulk_at(args, i);
+
+        if (strcasecmp(tok, "NX") == 0) {
+            if (*flags & SET_EXISTENCE_MASK) goto syntax_err;
+            *flags |= SET_NX;
+        } else if (strcasecmp(tok, "XX") == 0) {
+            if (*flags & SET_EXISTENCE_MASK) goto syntax_err;
+            *flags |= SET_XX;
+        } else if (strcasecmp(tok, "GET") == 0) {
+            *flags |= SET_GET;
+        } else if (strcasecmp(tok, "KEEPTTL") == 0) {
+            if (*flags & SET_EXPIRE_MASK) goto syntax_err;
+            *flags |= SET_KEEPTTL;
+        } else if (strcasecmp(tok, "EX") == 0) {
+            if (*flags & SET_EXPIRE_MASK) goto syntax_err;
+            sds val = get_bulk_at(args, ++i);
+            if (val == NULL) { return 0; }
+            expire_ms = current_time_ms() + strtoll(val, NULL, 10) * 1000;
+        } else if (strcasecmp(tok, "PX") == 0) {
+            if (*flags & SET_EXPIRE_MASK) goto syntax_err;
+            sds val = get_bulk_at(args, ++i);
+            if (val == NULL) { return 0;}
+            expire_ms = current_time_ms() + strtoll(val, NULL, 10);
+        } else {
+            goto syntax_err;
+        }
+    }
+
+    *ttl = expire_ms;
+    return 1;
+
+    syntax_err:
+        snprintf(response, response_size, "-ERR syntax error\r\n");
+        return 0;
+}
+
 static void set_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
-    redis_object *redis_obj = create_redis_object(OBJ_STRING, get_bulk_at(args, 2), -1);
-    ht_put(db, get_bulk_at(args, 1), redis_obj);
-    snprintf(response, response_size, "+OK\r\n");
+    long long ttl;
+    int flags;
+    if (!parse_set_options(args, response, response_size, &ttl, &flags)) return;
+
+    sds key = get_bulk_at(args, 1);
+    sds value = get_bulk_at(args, 2);
+
+    redis_object *existing = lookup_redis_object(db, key);
+    sds old_value = (existing != NULL) ? sdsdup(existing->ptr) : NULL;
+
+    int write = 1;
+    if (flags & SET_EXISTENCE_MASK)
+        write = ((flags & SET_NX) && existing == NULL) ||((flags & SET_XX) && existing != NULL);
+
+    if (write) {
+        if ((flags & SET_KEEPTTL) && existing != NULL) ttl = existing->expires_at;
+        redis_object *redis_obj = create_redis_object(OBJ_STRING, value, ttl);
+        ht_put(db, key, redis_obj);
+    }
+
+    if (flags & SET_GET) {
+        if (old_value != NULL) snprintf(response, response_size, "$%u\r\n%s\r\n", sdslen(old_value), old_value);
+        else snprintf(response, response_size, "$-1\r\n");
+    } else if (write) snprintf(response, response_size, "+OK\r\n");
+    else snprintf(response, response_size, "$-1\r\n");
+
+    sdsfree(old_value);
 }
 
 static void mset_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
@@ -240,7 +307,7 @@ static void incr_decr(hash_table *db, sds key, long long delta, char *response, 
         sdsfree(value);
         ht_put(db, key, redis_obj);
     } else {
-        sdsfree((sds) redis_obj->ptr);
+        sdsfree(redis_obj->ptr);
         redis_obj->ptr = sdsnew(buf);
     }
 
@@ -376,6 +443,15 @@ static void smembers_command(resp_object *args, hash_table *db, char *response, 
     set_foreach(s, sgetall_append, &ctx);
 }
 
+/**
+* - ZADD key [NX | XX] [GT | LT] [CH] [INCR] score member [score member ...]
+    - NX/XX — only add new / only update existing
+    - GT/LT — only update if new score greater/less than current
+    - CH — return count of changed elements (added + updated) instead of just
+      added
+    - INCR — increment the member's score instead of setting it (like ZINCRBY);
+      only works with a single score/member pair
+*/
 static void zadd_command(resp_object *args, hash_table *db, char *response, size_t response_size) {
     int argc = args->array.len;
     if (argc % 2 != 0) {
@@ -467,7 +543,8 @@ static void list_pop(resp_object *args, hash_table *db, char *response, size_t r
     if (redis_obj == NULL) return;
 
     ql *ql = redis_obj->ptr;
-    int count = (int) strtoll(get_bulk_at(args, 2), NULL, 10);
+    sds str = get_bulk_at(args, 2);
+    int count = (str) ? (int) strtoll(str, NULL, 10) : 1;
     int deleted = 0;
     for (int i = 0; i < count; i++) {
         if (fn(ql)) deleted++;
@@ -565,43 +642,43 @@ static const command commands[] = {
     {"ECHO",           2, echo_command},
 
     {"EXISTS",        -2, exists_command},
-    {"DEL",           -2, del_command},
-    {"EXPIRE",         3, expire_command},
+    {"DEL",           -2, del_command, CMD_WRITE},
+    {"EXPIRE",         3, expire_command, CMD_WRITE},
     {"TTL",            2, ttl_command},
 
-    {"SET",            3, set_command},
-    {"MSET",          -3, mset_command},
+    {"SET",            -3, set_command, CMD_WRITE},
+    {"MSET",          -3, mset_command, CMD_WRITE},
     {"GET",            2, get_command},
     {"MGET",          -2, mget_command},
-    {"INCR",           2, incr_command},
-    {"DECR",           2, decr_command},
-    {"INCRBY",         3, incrby_command},
-    {"APPEND",         3, append_command},
+    {"INCR",           2, incr_command, CMD_WRITE},
+    {"DECR",           2, decr_command, CMD_WRITE},
+    {"INCRBY",         3, incrby_command, CMD_WRITE},
+    {"APPEND",         3, append_command, CMD_WRITE},
 
-    {"HSET",          -4, hset_command},
+    {"HSET",          -4, hset_command, CMD_WRITE},
     {"HGET",           3, hget_command},
     {"HGETALL",        2, hgetall_command},
-    {"HDEL",          -3, hdel_command},
+    {"HDEL",          -3, hdel_command, CMD_WRITE},
 
-    {"SADD",          -3, sadd_command},
-    {"SREM",          -3, srem_command},
+    {"SADD",          -3, sadd_command, CMD_WRITE},
+    {"SREM",          -3, srem_command, CMD_WRITE},
     {"SISMEMBER",      3, sismember_command},
     {"SMEMBERS",       2, smembers_command},
 
-    {"ZADD",          -4, zadd_command},
-    {"ZREM",          -3, zrem_command},
+    {"ZADD",          -4, zadd_command, CMD_WRITE},
+    {"ZREM",          -3, zrem_command, CMD_WRITE},
     {"ZRANGEBYSCORE",  4, zrangebyscore_command},
     {"ZSCORE",         3, zscore_command},
 
-    {"LPUSH",         -3, lpush_command},
-    {"RPUSH",         -3, rpush_command},
-    {"LPUSHX",        -3, lpushx_command},
-    {"RPUSHX",        -3, rpushx_command},
-    {"LPOP",           3, lpop_command},
-    {"RPOP",           3, rpop_command},
-    {"LINSERT",        5, linsert_command},
+    {"LPUSH",         -3, lpush_command, CMD_WRITE},
+    {"RPUSH",         -3, rpush_command, CMD_WRITE},
+    {"LPUSHX",        -3, lpushx_command, CMD_WRITE},
+    {"RPUSHX",        -3, rpushx_command, CMD_WRITE},
+    {"LPOP",           -2, lpop_command, CMD_WRITE},
+    {"RPOP",           -2, rpop_command, CMD_WRITE},
+    {"LINSERT",        5, linsert_command, CMD_WRITE},
     {"LLEN",           2, llen_command},
-    {"LREM",           4, lrem_command},
+    {"LREM",           4, lrem_command, CMD_WRITE},
     {"LRANGE",         4, lrange_command},
     {"LINDEX",         3, lindex_command},
 };
@@ -664,34 +741,36 @@ static void auth_command(resp_object *args, client_ctx *client, char *response, 
     }
 }
 
-void execute_command(resp_object *args, hash_table *db, client_ctx *client, char *response, size_t response_size) {
+const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, char *response, size_t response_size) {
     response[0] = '\0';
-    if (args->type != RESP_ARRAY || args->array.len == 0) return;
+    if (args->type != RESP_ARRAY || args->array.len == 0) return NULL;
     if (!validate_cmd_args(args)) {
         snprintf(response, response_size, "-ERR Protocol error: expected bulk string arguments\r\n");
-        return;
+        return NULL;
     }
 
     sds name = get_bulk_at(args, 0);
     if (strcasecmp(name, "AUTH") == 0) {
         auth_command(args, client, response, response_size);
-        return;
+        return NULL;
     }
 
     const command *cmd = lookup_command(name);
     if (required_password != NULL && !client->authenticated && (cmd == NULL || !(cmd->flags & CMD_NOAUTH))) {
         snprintf(response, response_size, "-NOAUTH Authentication required.\r\n");
-        return;
+        return NULL;
     }
     if (cmd == NULL) {
         snprintf(response, response_size, "-ERR unknown command '%s'\r\n", name);
-        return;
+        return NULL;
     }
 
     int argc = args->array.len;
     if ((cmd->arity > 0 && argc != cmd->arity) || (cmd->arity < 0 && argc < -cmd->arity)) {
         err_wrong_args(response, response_size, cmd->name);
-        return;
+        return NULL;
     }
+
     cmd->fun(args, db, response, response_size);
+    return cmd;
 }

@@ -44,7 +44,7 @@ static void execute(char *args[], size_t args_size) {
     free(ctx.buf);
 
     resp_object *resp_obj = parse_resp(resp, resp + sdslen(resp));
-    client_ctx local = {1}; // in-process REPL is trusted
+    client_ctx local = {1};
     execute_command(resp_obj, ht, &local, response, response_size);
     printf("%s\n", response);
 

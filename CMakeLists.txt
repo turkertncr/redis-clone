@@ -32,6 +32,10 @@ add_executable(redis_clone main.c
         include/command_handler.h
         src/config.c
         include/config.h
+        src/aof_handler.c
+        include/aof_handler.h
+        include/queue.h
+        src/queue.c
 )
 
 target_include_directories(redis_clone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

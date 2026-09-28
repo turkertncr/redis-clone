@@ -18,7 +18,7 @@ long long current_time_ms(void) {
     return ((long long)tv.tv_sec * 1000) + (tv.tv_usec / 1000);
 }
 
-redis_object* create_redis_object(redis_type type, void* ptr, long long ttl_seconds) {
+redis_object* create_redis_object(redis_type type, void* ptr, long long expires_at) {
     redis_object* obj = malloc(sizeof(*obj));
     if (!obj) return NULL;
 
@@ -38,11 +38,7 @@ redis_object* create_redis_object(redis_type type, void* ptr, long long ttl_seco
         return NULL;
     }
 
-    if (ttl_seconds > 0) {
-        obj->expires_at = current_time_ms() + (ttl_seconds * 1000);
-    } else {
-        obj->expires_at = -1;
-    }
+    obj->expires_at = (expires_at > 0) ? expires_at : -1;
     return obj;
 }
 
