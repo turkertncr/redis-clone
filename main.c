@@ -1,4 +1,7 @@
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <include/client.h>
 #include <include/redis_object.h>
@@ -8,7 +11,7 @@
 #include "include/aof_handler.h"
 
 int main(int argc, char **argv) {
-    hash_table *ht = ht_create((ht_value_free_fn) redis_object_free);
+    hash_table *ht = ht_create((ht_value_free_fn) redis_object_free, 0, HT_DEFAULT_CAPACITY);
     if (argc > 1) {
         return run_client();
     }

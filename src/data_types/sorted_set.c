@@ -1,7 +1,5 @@
 
-
 #include <stdlib.h>
-
 #include <include/data_types/sorted_set.h>
 
 void zset_free_fn(void* ptr) {
@@ -12,8 +10,8 @@ zset* zset_create() {
     zset *zset = malloc(sizeof(*zset));
     if (zset == NULL) return NULL;
 
-    zset->sl = sl_create();
-    zset->ht = ht_create(zset_free_fn);
+    zset->sl = skiplist_create();
+    zset->ht = ht_create(zset_free_fn, REF_MODE, HT_SMALL_CAPACITY);
 
     if (zset->sl == NULL || zset->ht == NULL) {
         zset_free(zset);
@@ -27,17 +25,20 @@ zset* zset_create() {
 int zset_add(zset *zset, double score, sds mem) {
     if (!zset) { return 0; }
 
-    double *existing = (double*)ht_get(zset->ht, mem);
+    double *existing = ht_get(zset->ht, mem);
     if (existing != NULL) {
-        sl_delete(zset->sl, *existing, mem);
+        double old_score = *existing;
+        ht_delete(zset->ht, mem);
+        skiplist_delete(zset->sl, old_score, mem);
     }
 
-    if (sl_insert(zset->sl, score, mem) == NULL) return 0;
+    skiplist_node *node = node = skiplist_insert(zset->sl, score, mem);
+    if (node == NULL) return 0;
 
     double *score_p = malloc(sizeof(*score_p));
     if (score_p == NULL) return 0;
     *score_p = score;
-    ht_put(zset->ht, mem, score_p);
+    ht_put(zset->ht, node->member, score_p);
 
     int ret = 0;
     if (existing == NULL) { zset->size++; ret++; }
@@ -50,8 +51,8 @@ int zset_rem(zset *zset, sds mem) {
     double* score = ht_get(zset->ht, mem);
     if (score == NULL) { return 0; }
 
-    if (sl_delete(zset->sl, *score, mem) &&
-        ht_delete(zset->ht, mem)) {
+    double s = *score;
+    if (ht_delete(zset->ht, mem) && skiplist_delete(zset->sl, s, mem)) {
         zset->size--;
         return 1;
     }
@@ -83,11 +84,11 @@ int zset_size(zset *zset) {
 void zset_free(zset* zset) {
     if (!zset) { return; }
     ht_free(zset->ht);
-    sl_free(zset->sl);
+    skiplist_free(zset->sl);
     free(zset);
 }
 
 int zset_range_by_score(zset *zset, double min, double max, sl_iter_range_fn fn, void *user_data) {
     if (!zset) { return -1; }
-    return sl_range(zset->sl, min, max, fn, user_data);
+    return skiplist_range(zset->sl, min, max, fn, user_data);
 }

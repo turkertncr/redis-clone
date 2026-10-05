@@ -1,7 +1,3 @@
-//
-// Created by turker on 17.08.2026.
-//
-
 #ifndef REDIS_CLONE_SORTED_SET_H
 #define REDIS_CLONE_SORTED_SET_H
 
@@ -9,7 +5,7 @@
 #include <include/data_types/hash_table.h>
 
 typedef struct {
-    sl* sl;
+    skiplist* sl;
     hash_table* ht;
     int size;
 } zset;

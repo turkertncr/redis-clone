@@ -56,6 +56,8 @@ int run_client() {
         return 1;
     }
 
+    sds pending = 0;
+    resp_status status;
     while (1) {
         if (fgets(buf, sizeof(buf), stdin) == NULL) break;
         buf[strcspn(buf, "\r\n")] = '\0';
@@ -71,21 +73,54 @@ int run_client() {
             break;
         }
 
-        getall_ctx ctx = build_resp(splitted.args, splitted.len);
-        send(sock, ctx.buf, (int) ctx.len, 0);
+        sds req = build_resp(splitted.args, splitted.len);
+        send(sock, req, (int) sdslen(req), 0);
 
-        int received = recv(sock, buf, sizeof(buf) - 1, 0);
-        if (received > 0) {
-            buf[received] = '\0';
-            printf("Received: %s\n", buf);
-        } else {
-            printf("No response from server.\n");
-        }
         free(splitted.args);
+        sdsfree(req);
+
+        while (1) {
+            int received = recv(sock, buf, sizeof(buf) - 1, 0);
+            if (received > 0) {
+                buf[received] = '\0';
+
+                if (!pending) pending = sdsnewlen(buf, received);
+                else pending = sdsappendlen(pending, buf, received);
+
+                resp_object *resp = 0;
+                status = parse_resp(pending, pending + sdslen(pending), &resp);
+
+                if (status == ERROR) {
+                    sdsfree(pending);
+                    pending = 0;
+                    free_respobj(resp);
+                    goto close;
+                    return 1;
+                }
+
+                if (status == INCOMPLETE) { continue; }
+
+                if (status == OK) {
+                    printf("Received: %s\n", pending);
+                    sdsfree(pending);
+                    pending = 0;
+                    free_respobj(resp);
+                    break;
+                }
+            } else {
+                printf("No response from server.\n");
+                sdsfree(pending);
+                pending = 0;
+                goto close;
+            }
+        }
     }
 
-    closesocket(sock);
-    WSACleanup();
+    close:
+        closesocket(sock);
+        WSACleanup();
 
     return 0;
 }
+
+//zrangebyscore car_data:9159:25:55 0 17000000000000000

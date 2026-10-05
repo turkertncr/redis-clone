@@ -6,7 +6,6 @@
 #include <include/data_types/zip_list.h>
 
 ziplist ziplist_create() {
-
     size_t total = hdrsize + 1;
     struct zlhdr *zlhdr = malloc(total);
     if (zlhdr == NULL) { return NULL; }

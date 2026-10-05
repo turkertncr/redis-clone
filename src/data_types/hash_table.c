@@ -1,5 +1,6 @@
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,13 +9,14 @@
 
 #define HASH_TABLE_LOAD_FACTOR 0.75
 
-hash_table* ht_create(ht_value_free_fn free_fn) {
+hash_table* ht_create(ht_value_free_fn free_fn, int flags, int capacity) {
     hash_table *table = malloc(sizeof(*table));
     if (table == NULL) return NULL;
 
     table->size = 0;
-    table->capacity = 1024;
+    table->capacity = capacity > 0 ? capacity : HT_DEFAULT_CAPACITY;
     table->free_fn = free_fn;
+    table->flags = flags;
 
     table->table = calloc(table->capacity, sizeof(ht_node*));
     if (table->table == NULL) {
@@ -25,11 +27,13 @@ hash_table* ht_create(ht_value_free_fn free_fn) {
     return table;
 }
 
-ht_node* ht_node_create(sds key, void *value) {
+ht_node* ht_node_create(sds key, void *value, int ref) {
     ht_node *new_node = malloc(sizeof(*new_node));
     if (new_node == NULL) return NULL;
 
-    new_node->key = sdsdup(key);
+    if (ref & REF_MODE) new_node->key = key;
+    else new_node->key = sdsdup(key);
+
     if (new_node->key == NULL) {
         free(new_node);
         return NULL;
@@ -69,7 +73,7 @@ int ht_delete(hash_table *ht, sds key){
                 previous->next = current->next;
             }
             ht->size--;
-            sdsfree(current->key);
+            if (!(ht->flags & REF_MODE)) sdsfree(current->key);
             if (ht->free_fn)
                 ht->free_fn(current->value);
             else {
@@ -81,7 +85,6 @@ int ht_delete(hash_table *ht, sds key){
         previous = current;
         current = current->next;
     }
-
     return 0;
 }
 
@@ -111,7 +114,7 @@ int ht_put(hash_table *ht, sds key, void *value) {
     }
 
     unsigned long idx = ht_hash(key) % ht->capacity;
-    ht_node* inserted = ht_node_create(key, value);
+    ht_node* inserted = ht_node_create(key, value, ht->flags);
     if (inserted == NULL) return 0;
 
     inserted->next = ht->table[idx];
@@ -136,7 +139,7 @@ void ht_extend(hash_table *ht) {
         while (current != NULL) {
             ht_node* next = current->next;
             ht_put(ht, current->key, current->value);
-            sdsfree(current->key);
+            if (!(ht->flags & REF_MODE)) sdsfree(current->key);
             free(current);
             current = next;
         }
@@ -163,7 +166,7 @@ void ht_free(hash_table *ht) {
         ht_node *current = ht->table[i];
         while (current != NULL) {
             ht_node *next = current->next;
-            sdsfree(current->key);
+            if (!(ht->flags & REF_MODE)) sdsfree(current->key);
             ht->free_fn(current->value);
             free(current);
             current = next;

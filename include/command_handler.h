@@ -9,16 +9,15 @@
 #include "data_types/hash_table.h"
 
 typedef struct {
-    char *buf;
-    size_t capacity;
-    size_t len;
+    sds out;
 } getall_ctx;
 
 typedef struct {
     int authenticated;
+    sds pending;
 } client_ctx;
 
-typedef void (command_fun)(resp_object *args, hash_table *db, char *response, size_t response_size);
+typedef void (command_fun)(resp_object *args, hash_table *db, sds *out);
 
 #define CMD_NOAUTH (1 << 0)
 #define CMD_WRITE (1 << 1)
@@ -35,15 +34,15 @@ typedef void (command_fun)(resp_object *args, hash_table *db, char *response, si
 
 typedef struct {
     const char *name;
-    int arity;
+    int argc;
     command_fun *fun;
     int flags;
 } command;
 
-size_t append_fmt(char *response, size_t response_size, size_t offset, const char *fmt, ...);
-size_t append_b(char *buf, size_t capacity, size_t len, sds val);
+void append_fmt(sds *out, const char *fmt, ...);
+void append_b(sds *out, sds val);
 void set_required_password(const char *password);
 int auth_required(void);
-const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, char *response, size_t response_size);
+const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, sds *out);
 
 #endif //REDIS_CLONE_COMMAND_HANDLER_H

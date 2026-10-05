@@ -56,7 +56,7 @@ static int read_file(const char *path) {
 }
 
 int init_config(const char *path) {
-    options = ht_create(NULL);
+    options = ht_create(NULL, 0, HT_DEFAULT_CAPACITY);
     return read_file(path ? path : "redis.conf");
 }
 

@@ -1,6 +1,3 @@
-//
-// Created by turker on 10.08.2026.
-//
 
 #include <stdlib.h>
 #include <sys/time.h>
@@ -26,7 +23,7 @@ redis_object* create_redis_object(redis_type type, void* ptr, long long expires_
 
     switch (type) {
         case OBJ_STRING: obj->ptr = sdsdup((sds)ptr); break;
-        case OBJ_HASH: obj->ptr = ht_create((ht_value_free_fn) sdsfree); break;
+        case OBJ_HASH: obj->ptr = ht_create((ht_value_free_fn) sdsfree, 0, HT_SMALL_CAPACITY); break;
         case OBJ_SET: obj->ptr = set_create(); break;
         case OBJ_LIST: obj->ptr = quicklist_create(); break;
         case OBJ_ZSET: obj->ptr = zset_create(); break;

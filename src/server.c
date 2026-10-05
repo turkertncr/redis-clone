@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,18 +25,32 @@
 #define WSACleanup() ((void) 0)
 #endif
 
+#define DBG(fmt, ...) fprintf(stderr, "%s:%d:%s(): " fmt, __FILE__, __LINE__, __func__ )
+
 #include <include/server.h>
 #include <include/command_handler.h>
 #include <include/repl.h>
 
+void print_status(resp_status *status) {
+    DBG("status: ");
+    switch (*status) {
+        case OK: DBG("OK"); break;
+        case INCOMPLETE: DBG("INCOMPLETE"); break;
+        case ERROR: DBG("ERROR"); break;
+        default: DBG("UNKNOWN"); break;
+    }
+    DBG("\n");
+}
+
 void handle_client_request(const SOCKET* client_sock, resp_object* resp_obj, hash_table* ht, client_ctx* client)
 {
-    char response[16384];
-    execute_command(resp_obj, ht, client, response, sizeof(response));
+    sds out = sdsempty();
+    execute_command(resp_obj, ht, client, &out);
 
-    if (response[0] != '\0') {
-        send(*client_sock, response, (size_t) strlen(response), 0);
+    if (sdslen(out) > 0) {
+        send(*client_sock, out, (int) sdslen(out), 0);
     }
+    sdsfree(out);
 }
 
 void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
@@ -134,6 +149,7 @@ int init_socket(hash_table *ht, queue *q)
                 fds[nfds].events = POLLIN;
                 fds[nfds].revents = 0;
                 clients[nfds].authenticated = !auth_required();
+                clients[nfds].pending = NULL;
                 nfds++;
             }
         }
@@ -148,35 +164,63 @@ int init_socket(hash_table *ht, queue *q)
                 } else {
                     buff[read_bytes] = '\0';
 
-                    resp_object *resp_obj = 0;
-                    if (buff[0] != '*' && buff[0] != '$') {
-                        struct split splitted = split_cmd(buff);
-                        getall_ctx ctx = build_resp(splitted.args, splitted.len);
-                        resp_obj = parse_resp(ctx.buf, ctx.buf + ctx.len);
-                        free(ctx.buf);
+                    resp_object *resp_obj = NULL;
+                    resp_status status;
+
+                    client_ctx *client = &clients[i];
+
+                    if (client->pending == NULL) {
+                        client->pending = sdsnewlen(buff, read_bytes);
+                    } else {
+                        client->pending = sdsappendlen(client->pending, buff, read_bytes);
+                    }
+
+                    if (client->pending[0] != '*' && client->pending[0] != '$') {
+                        struct split splitted = split_cmd(client->pending);
+                        sds resp = build_resp(splitted.args, splitted.len);
+                        status = parse_resp(resp, resp + sdslen(resp), &resp_obj);
+                        sdsfree(resp);
                         free(splitted.args);
                     } else {
-                        resp_obj = parse_resp(buff, buff + read_bytes);
+                        status = parse_resp(client->pending, client->pending + sdslen(client->pending), &resp_obj);
                     }
 
-                    if (resp_obj == NULL) {
+                    if (status == ERROR) {
+                        sdsfree(client->pending);
                         drop_client(fds, clients, &nfds, i--);
                         continue;
                     }
 
-                    if (resp_obj->type == RESP_nil) {
-                        drop_client(fds, clients, &nfds, i--);
-                        free(resp_obj);
+                    if (status == INCOMPLETE) {
                         continue;
                     }
-                    size_t response_size = 16384;
-                    char response[response_size];
 
-                    const command *cmd =execute_command(resp_obj, ht, &clients[i], response, response_size);
-                    if (cmd && (cmd->flags & CMD_WRITE) && response[0] != '-') queue_push(q, sdsnew(buff));
+                    if (status == OK) {
+                        sds out = sdsempty();
 
-                    send(fds[i].fd, response, strlen(response), 0);
-                    free_respobj(resp_obj);
+                        const command *cmd = execute_command(resp_obj, ht, &clients[i], &out);
+                        if (cmd && (cmd->flags & CMD_WRITE) && out[0] != '-') queue_push(q, sdsnew(buff));
+
+                        size_t sent = 0;
+                        size_t len = sdslen(out);
+                        while (sent < len) {
+                            ssize_t bytes = send(fds[i].fd, out + sent, (int)(len - sent), 0);
+                            if (bytes > 0) {
+                                sent += bytes;
+                                continue;
+                            }
+                            if (bytes < 0) {
+                                continue;
+                            }
+                            break;
+                        }
+
+                        sdsfree(out);
+                        free_respobj(resp_obj);
+
+                        sdsfree(client->pending);
+                        client->pending = 0;
+                    }
                 }
             }
         }

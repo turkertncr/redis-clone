@@ -18,29 +18,29 @@ typedef struct sl_node {
     struct {
         struct sl_node* next;
     } level_array[];
-} sl_node;
+} skiplist_node;
 
 typedef struct {
     int top_level;
     uint32_t size;
-    sl_node* head;
-} sl;
+    skiplist_node* head;
+} skiplist;
 
-typedef void sl_iter_range_fn(sl_node *node, void *user_data);
+typedef void sl_iter_range_fn(skiplist_node *node, void *user_data);
 
-sl *sl_create(void);
-void sl_free(sl *skipl);
+skiplist *skiplist_create(void);
+void skiplist_free(skiplist *skipl);
 
-sl_node *sl_node_create(double score, sds member, int level);
-void sl_node_free(sl_node *node);
+skiplist_node *skiplist_node_create(double score, sds member, int level);
+void skiplist_node_free(skiplist_node *node);
 
-int sl_rand(void);
-int sl_cmp(double score1, sds member1, double score2, sds member2);
+int skiplist_rand(void);
+int skiplist_cmp(double score1, sds member1, double score2, sds member2);
 
-sl_node *sl_insert(sl *skipl, double score, sds member);
-int sl_delete(sl *skipl, double score, sds member);
-sl_node *sl_search(sl *skipl, double score, sds member);
+skiplist_node *skiplist_insert(skiplist *skipl, double score, sds member);
+int skiplist_delete(skiplist *skipl, double score, sds member);
+skiplist_node *skiplist_search(skiplist *skipl, double score, sds member);
 
-int sl_range(sl *skipl, double min, double max, sl_iter_range_fn fn, void *user_data);
+int skiplist_range(skiplist *skipl, double min, double max, sl_iter_range_fn fn, void *user_data);
 
 #endif //REDIS_CLONE_SKIPL_LIST_H

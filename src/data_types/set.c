@@ -1,13 +1,12 @@
 
 #include <stdlib.h>
-
 #include <include/data_types/set.h>
 
 set* set_create() {
     set *set = malloc(sizeof(*set));
     if (set == NULL) return NULL;
 
-    set->ht = ht_create((ht_value_free_fn) sdsfree);
+    set->ht = ht_create((ht_value_free_fn) sdsfree, 0, HT_SMALL_CAPACITY);
     if (set->ht == NULL) {
         free(set);
         return NULL;

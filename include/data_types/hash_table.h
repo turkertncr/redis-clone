@@ -17,14 +17,20 @@ typedef struct ht_node {
 } ht_node;
 
 typedef struct ht {
+    int flags;
     int size;
     int capacity;
     ht_node** table;
     ht_value_free_fn free_fn;
 } hash_table;
 
-hash_table* ht_create(ht_value_free_fn free_fn);
-ht_node* ht_node_create(sds key, void* value);
+#define REF_MODE (1 << 0)
+
+#define HT_DEFAULT_CAPACITY 1024
+#define HT_SMALL_CAPACITY 4
+
+hash_table* ht_create(ht_value_free_fn free_fn, int flags, int capacity);
+ht_node* ht_node_create(sds key, void* value, int ref);
 ht_node* ht_node_get(hash_table *ht, sds key);
 void ht_extend(hash_table *ht);
 void* ht_get(hash_table* ht, sds key);

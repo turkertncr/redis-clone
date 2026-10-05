@@ -5,8 +5,8 @@
 #include <include/data_types/quick_list.h>
 #include <include/data_types/zip_list.h>
 
-ql* quicklist_create() {
-    ql *ql = malloc(sizeof(*ql));
+quicklist* quicklist_create() {
+    quicklist *ql = malloc(sizeof(*ql));
     if (ql == NULL) return NULL;
 
     ql->head = ql->tail = NULL;
@@ -15,8 +15,8 @@ ql* quicklist_create() {
     return ql;
 }
 
-ql_node* create_quicklist_node() {
-    ql_node *node = malloc(sizeof(*node));
+quicklist_node* create_quicklist_node() {
+    quicklist_node *node = malloc(sizeof(*node));
     if (node == NULL) return NULL;
 
     node->prev = node->next = NULL;
@@ -26,12 +26,12 @@ ql_node* create_quicklist_node() {
     return node;
 }
 
-int quicklist_push_tail(ql *ql, sds value) {
+int quicklist_push_tail(quicklist *ql, sds value) {
     uint32_t value_len = sdslen(value);
-    ql_node *node = ql->tail;
+    quicklist_node *node = ql->tail;
 
     if (!node || (node->sz + value_len) > QL_MAX_BYTES) {
-        ql_node* new = create_quicklist_node();
+        quicklist_node* new = create_quicklist_node();
 
         if (ql->tail == NULL) {
             ql->tail = new;
@@ -54,12 +54,12 @@ int quicklist_push_tail(ql *ql, sds value) {
     return (int) ql->count;
 }
 
-int quicklist_push_head(ql *ql, sds value) {
+int quicklist_push_head(quicklist *ql, sds value) {
     uint32_t value_len = sdslen(value);
-    ql_node *node = ql->head;
+    quicklist_node *node = ql->head;
 
     if (!node || (node->sz + value_len) > QL_MAX_BYTES) {
-        ql_node* new = create_quicklist_node();
+        quicklist_node* new = create_quicklist_node();
 
         if (ql->head == NULL) {
             ql->head = new;
@@ -81,8 +81,8 @@ int quicklist_push_head(ql *ql, sds value) {
     return (int) ql->count;
 }
 
-int quicklist_pop_tail(ql *ql) {
-    ql_node *node = ql->tail;
+int quicklist_pop_tail(quicklist *ql) {
+    quicklist_node *node = ql->tail;
 
     if (!node || node->count == 0) { return 0; }
 
@@ -104,8 +104,8 @@ int quicklist_pop_tail(ql *ql) {
     return 1;
 }
 
-int quicklist_pop_head(ql *ql) {
-    ql_node *node = ql->head;
+int quicklist_pop_head(quicklist *ql) {
+    quicklist_node *node = ql->head;
 
     if (!node || node->count == 0) { return 0; }
 
@@ -127,10 +127,10 @@ int quicklist_pop_head(ql *ql) {
     return 1;
 }
 
-void quicklist_free(ql *ql) {
-    ql_node *head = ql->head;
+void quicklist_free(quicklist *ql) {
+    quicklist_node *head = ql->head;
     while (head) {
-        ql_node *next = head->next;
+        quicklist_node *next = head->next;
         ziplist_free(head->zl);
         free(head);
         head = next;
@@ -138,10 +138,10 @@ void quicklist_free(ql *ql) {
     free(ql);
 }
 
-static ql_node* quicklist_unlink_node(ql *ql, ql_node *node);
+static quicklist_node* quicklist_unlink_node(quicklist *ql, quicklist_node *node);
 
-ql_node* find_quicklist_node(ql *ql, const char *pivot, size_t pivot_size) {
-    ql_node *node = ql->head;
+quicklist_node* find_quicklist_node(quicklist *ql, const char *pivot, size_t pivot_size) {
+    quicklist_node *node = ql->head;
     while (node && node->count > 0) {
         ziplist zl = node->zl;
 
@@ -154,9 +154,9 @@ ql_node* find_quicklist_node(ql *ql, const char *pivot, size_t pivot_size) {
     return 0;
 }
 
-int quicklist_insert(ql *ql, const char *pivot, size_t pivot_size, sds value, int before) {
+int quicklist_insert(quicklist *ql, const char *pivot, size_t pivot_size, sds value, int before) {
 
-    ql_node *node = find_quicklist_node(ql, pivot, pivot_size);
+    quicklist_node *node = find_quicklist_node(ql, pivot, pivot_size);
     if (!node) { return 0; }
     ziplist zl = node->zl;
     struct zlhdr *hdr = getzlhdr(zl);
@@ -165,7 +165,7 @@ int quicklist_insert(ql *ql, const char *pivot, size_t pivot_size, sds value, in
     size_t zlbytes = hdr->zlbytes;
 
     if (zlbytes + value_len > QL_MAX_BYTES) {
-        ql_node *new_block = create_quicklist_node();
+        quicklist_node *new_block = create_quicklist_node();
         struct zlentry *entry = zltail(zl);
 
         size_t moved_bytes = 0;
@@ -186,7 +186,7 @@ int quicklist_insert(ql *ql, const char *pivot, size_t pivot_size, sds value, in
         }
 
         if (node->next) {
-            ql_node *next = node->next;
+            quicklist_node *next = node->next;
             next->prev = new_block;
             new_block->next = next;
         } else {
@@ -211,9 +211,9 @@ int quicklist_insert(ql *ql, const char *pivot, size_t pivot_size, sds value, in
     return 1;
 }
 
-static ql_node* quicklist_unlink_node(ql *ql, ql_node *node) {
-    ql_node *prev = node->prev;
-    ql_node *next = node->next;
+static quicklist_node* quicklist_unlink_node(quicklist *ql, quicklist_node *node) {
+    quicklist_node *prev = node->prev;
+    quicklist_node *next = node->next;
 
     if (prev) { prev->next = next; } else { ql->head = next; }
     if (next) { next->prev = prev; } else { ql->tail = prev; }
@@ -225,17 +225,17 @@ static ql_node* quicklist_unlink_node(ql *ql, ql_node *node) {
     return next;
 }
 
-int quicklist_remove(ql *ql, sds value, int count) {
+int quicklist_remove(quicklist *ql, sds value, int count) {
 
     int from_head = (count >= 0);
-    ql_node *node = from_head ? ql->head : ql->tail;
+    quicklist_node *node = from_head ? ql->head : ql->tail;
 
     int unlimited = (count == 0);
     int remaining = unlimited ? 0 : (count > 0 ? count : -count);
     int deleted = 0;
 
     while (node && (unlimited || remaining > 0)) {
-        ql_node *step = from_head ? node->next : node->prev;
+        quicklist_node *step = from_head ? node->next : node->prev;
 
         uint16_t before_len = getzlhdr(node->zl)->zllen;
         int node_count = unlimited ? 0 : (from_head ? remaining : -remaining);
@@ -260,12 +260,12 @@ int quicklist_remove(ql *ql, sds value, int count) {
     return deleted;
 }
 
-struct zlentry *quicklist_get_at(ql *ql, int index) {
+struct zlentry *quicklist_get_at(quicklist *ql, int index) {
 
     if (index < 0) { index += (int) ql->count; }
     if (index < 0 || index >= (int) ql->count) { return NULL; }
 
-    ql_node *node = ql->head;
+    quicklist_node *node = ql->head;
     while (node) {
         if (index < (int) node->count) {
             return ziplist_get_at(node->zl, index);
@@ -276,7 +276,7 @@ struct zlentry *quicklist_get_at(ql *ql, int index) {
     return NULL;
 }
 
-int quicklist_range(ql *ql, int start, int stop, quicklist_foreach_fn fn, void *user_data) {
+int quicklist_range(quicklist *ql, int start, int stop, quicklist_foreach_fn fn, void *user_data) {
     int len = (int) ql->count;
     if (len == 0) { return 0; }
 
@@ -288,7 +288,7 @@ int quicklist_range(ql *ql, int start, int stop, quicklist_foreach_fn fn, void *
 
     int counter = 0;
     int index = 0;
-    ql_node *node = ql->head;
+    quicklist_node *node = ql->head;
 
     while (node && index <= stop) {
         int node_start = index;

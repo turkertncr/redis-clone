@@ -9,7 +9,7 @@ struct split {
 };
 
 struct split split_cmd(char *args);
-getall_ctx build_resp(char **resp_arr, size_t resp_arr_size);
+sds build_resp(char **resp_arr, size_t resp_arr_size);
 void repl_init(hash_table *ht);
 void execute_with_str(char *args);
 

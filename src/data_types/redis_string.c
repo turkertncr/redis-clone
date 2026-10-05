@@ -11,7 +11,8 @@ sds sdsnewlen(const void *init, uint32_t initlen) {
     struct sdshdr *sh = malloc(total_size);
     if (sh == NULL) { return NULL; }
 
-    sh->len = sh->alloc = initlen;
+    sh->len = initlen;
+    sh->alloc = initlen;
     sh->flags = 0;
 
     if (initlen > 0 && init != NULL) {
@@ -25,6 +26,11 @@ sds sdsnewlen(const void *init, uint32_t initlen) {
 sds sdsnew(const char *init) {
     uint32_t initlen = (init == NULL) ? 0 : strlen(init);
     return sdsnewlen(init, initlen);
+}
+
+
+sds sdsempty() {
+    return sdsnewlen("", 0);
 }
 
 sds sdsdup(const sds s) {
@@ -57,6 +63,7 @@ int sdscmp(const sds s1, const sds s2) {
 }
 
 struct sdshdr *sdsgethdr(sds s) {
+    if (s == NULL) return NULL;
     struct sdshdr *sh = (struct sdshdr *) (s - sizeof(struct sdshdr));
     if (sh == NULL) return NULL;
     return sh;
@@ -72,4 +79,31 @@ sds sdscat(sds s1, sds s2) {
     memcpy(res + l1, s2, l2);
 
     return res;
+}
+
+sds sdsappendlen(sds s1, const void *s2, size_t len) {
+
+    struct sdshdr *sh = sdsgethdr(s1);
+    if (sh == NULL) return NULL;
+
+    size_t newlen = sh->len + len;
+    size_t alloc = sh->alloc;
+    if (alloc == 0) alloc = newlen;
+    else while (alloc < newlen) alloc *= 2;
+
+    struct sdshdr *tmp = realloc(sh, sizeof(struct sdshdr) + alloc + 1);
+    if (tmp == NULL) return NULL;
+    sh = tmp;
+    sh->alloc = alloc;
+
+    if (len > 0 && s2 != NULL) memcpy(sh->data + sh->len, s2, len);
+
+    sh->len = newlen;
+    sh->data[newlen] = '\0';
+
+    return sh->data;
+}
+
+sds sdsappend(sds s1, const char *s2) {
+    return sdsappendlen(s1, s2, strlen(s2));
 }
