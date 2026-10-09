@@ -28,7 +28,6 @@ sds sdsnew(const char *init) {
     return sdsnewlen(init, initlen);
 }
 
-
 sds sdsempty() {
     return sdsnewlen("", 0);
 }

@@ -44,7 +44,7 @@ resp_status parse_int(sds input, resp_object* obj, sds* next);
 resp_status parse_array(sds input, const char* end, resp_object* obj, sds* next);
 resp_status handle_type(sds input, const char* end, char type, resp_object* obj, sds* next);
 void print_respobj(resp_object* obj, int depth);
-resp_status parse_resp(sds input, const char* end, resp_object** obj_out);
+resp_status parse_resp(sds input, const char* end, resp_object** obj_out, sds *next);
 sds get_bulk_at(resp_object* resp_obj, int index);
 
 #endif //REDIS_CLONE_RESP_PARSER_H

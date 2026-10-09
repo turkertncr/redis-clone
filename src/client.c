@@ -27,6 +27,14 @@ typedef int SOCKET;
 #include <include/command_handler.h>
 #include <include/repl.h>
 
+void clear_terminal() {
+#if defined(_WIN32) || defined(_WIN64)
+        system("cls");
+#else
+        system("clear");
+#endif
+}
+
 int run_client() {
     SOCKET sock;
     struct sockaddr_in server_addr;
@@ -73,6 +81,11 @@ int run_client() {
             break;
         }
 
+        if (strcmp(splitted.args[0], "clear") == 0) {
+            clear_terminal();
+            continue;
+        }
+
         sds req = build_resp(splitted.args, splitted.len);
         send(sock, req, (int) sdslen(req), 0);
 
@@ -88,7 +101,8 @@ int run_client() {
                 else pending = sdsappendlen(pending, buf, received);
 
                 resp_object *resp = 0;
-                status = parse_resp(pending, pending + sdslen(pending), &resp);
+                sds next;
+                status = parse_resp(pending, pending + sdslen(pending), &resp, &next);
 
                 if (status == ERROR) {
                     sdsfree(pending);

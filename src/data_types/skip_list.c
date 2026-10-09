@@ -162,6 +162,14 @@ int skiplist_range(skiplist *skipl, double min, double max,sl_iter_range_fn fn, 
     skiplist_node *curr = skipl->head;
 
     int counter = 0;
+    if (min == 0 && max == -1) {
+        while (curr != NULL) {
+            fn(curr, user_data);
+            counter++;
+            curr = curr->level_array[0].next;
+        }
+        return counter;
+    }
 
     for (int i = skipl->top_level - 1; i >= 0; i--) {
         while (curr->level_array[i].next != NULL && curr->level_array[i].next->score < min) {

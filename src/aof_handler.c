@@ -1,7 +1,6 @@
 
 #include <pthread.h>
 #include <stdio.h>
-#include <string.h>
 
 #include <include/aof_handler.h>
 

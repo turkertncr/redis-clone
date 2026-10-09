@@ -15,6 +15,7 @@ typedef struct {
 typedef struct {
     int authenticated;
     sds pending;
+    sds out;
 } client_ctx;
 
 typedef void (command_fun)(resp_object *args, hash_table *db, sds *out);

@@ -38,7 +38,7 @@ static void execute(char *args[], size_t args_size) {
     sds resp = build_resp(args, args_size);
 
     resp_object *resp_obj = NULL;
-    resp_status status = parse_resp(resp, resp + sdslen(resp), &resp_obj);
+    resp_status status = parse_resp(resp, resp + sdslen(resp), &resp_obj, NULL);
     if (status != OK) {
         printf("invalid command\n");
         sdsfree(resp);

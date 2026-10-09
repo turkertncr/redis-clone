@@ -25,6 +25,12 @@
 #define WSACleanup() ((void) 0)
 #endif
 
+#ifdef _WIN32
+#define WOULD_BLOCK(err) ((err) == WSAEWOULDBLOCK)
+#else
+#define WOULD_BLOCK(err) ((err) == EWOULDBLOCK || (err) == EAGAIN)
+#endif
+
 #define DBG(fmt, ...) fprintf(stderr, "%s:%d:%s(): " fmt, __FILE__, __LINE__, __func__ )
 
 #include <include/server.h>
@@ -59,6 +65,19 @@ void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
     clients[i] = clients[*nfds - 1];
     fds[*nfds - 1].fd = -1;
     (*nfds)--;
+}
+
+void parse_inline(client_ctx *client, resp_object *resp_obj, resp_status *status) {
+    struct split splitted = split_cmd(client->pending);
+    sds resp = build_resp(splitted.args, splitted.len);
+    sds discard = NULL;
+    *status = parse_resp(resp, resp + sdslen(resp), &resp_obj, &discard);
+    sdsfree(resp);
+    free(splitted.args);
+}
+
+int is_inline(sds in) {
+    return in[0] == '*' || in[0] == '$';
 }
 
 int init_socket(hash_table *ht, queue *q)
@@ -150,12 +169,40 @@ int init_socket(hash_table *ht, queue *q)
                 fds[nfds].revents = 0;
                 clients[nfds].authenticated = !auth_required();
                 clients[nfds].pending = NULL;
+                clients[nfds].out = NULL;
                 nfds++;
             }
         }
 
         for (int i = 1; i < nfds; i++) {
             struct pollfd *f = &fds[i];
+            client_ctx *client = &clients[i];
+
+            if (f->revents & POLLOUT) {
+                int client_dropped = 0;
+                while (sdslen(client->out) > 0) {
+                    long sent = send(fds[i].fd, client->out, sdslen(client->out), 0);
+                    if (sent > 0) {
+                        sds trim = sdsnewlen(client->out + sent, sdslen(client->out) - sent);
+                        sdsfree(client->out);
+                        client->out = trim;
+                        continue;
+                    }
+
+                    if (WOULD_BLOCK(WSAGetLastError())) break;
+
+                    sdsfree(client->out);
+                    client->out = NULL;
+                    drop_client(fds, clients, &nfds, i--);
+                    client_dropped = 1;
+                    break;
+                }
+                if (client_dropped) continue;
+
+                if (sdslen(client->out) == 0) {
+                    f->events &= ~POLLOUT;
+                }
+            }
 
             if (f->revents & POLLIN) {
                 long read_bytes = recv(f->fd, buff, sizeof(buff) - 1, 0);
@@ -167,33 +214,26 @@ int init_socket(hash_table *ht, queue *q)
                     resp_object *resp_obj = NULL;
                     resp_status status;
 
-                    client_ctx *client = &clients[i];
+                    if (client->pending == NULL) client->pending = sdsnewlen(buff, read_bytes);
+                    else client->pending = sdsappendlen(client->pending, buff, read_bytes);
 
-                    if (client->pending == NULL) {
-                        client->pending = sdsnewlen(buff, read_bytes);
+                main:
+                    sds next = NULL;
+                    if (sdslen(client->pending) == 0) continue;
+                    if (!is_inline(client->pending)) {
+                        parse_inline(client, resp_obj, &status);
                     } else {
-                        client->pending = sdsappendlen(client->pending, buff, read_bytes);
-                    }
-
-                    if (client->pending[0] != '*' && client->pending[0] != '$') {
-                        struct split splitted = split_cmd(client->pending);
-                        sds resp = build_resp(splitted.args, splitted.len);
-                        status = parse_resp(resp, resp + sdslen(resp), &resp_obj);
-                        sdsfree(resp);
-                        free(splitted.args);
-                    } else {
-                        status = parse_resp(client->pending, client->pending + sdslen(client->pending), &resp_obj);
+                        status = parse_resp(client->pending, client->pending + sdslen(client->pending), &resp_obj, &next);
                     }
 
                     if (status == ERROR) {
+                        fprintf(stderr, "PARSE ERROR on: %.*s\n", (int) sdslen(client->pending), client->pending);
                         sdsfree(client->pending);
                         drop_client(fds, clients, &nfds, i--);
                         continue;
                     }
 
-                    if (status == INCOMPLETE) {
-                        continue;
-                    }
+                    if (status == INCOMPLETE) continue;
 
                     if (status == OK) {
                         sds out = sdsempty();
@@ -201,25 +241,42 @@ int init_socket(hash_table *ht, queue *q)
                         const command *cmd = execute_command(resp_obj, ht, &clients[i], &out);
                         if (cmd && (cmd->flags & CMD_WRITE) && out[0] != '-') queue_push(q, sdsnew(buff));
 
-                        size_t sent = 0;
                         size_t len = sdslen(out);
-                        while (sent < len) {
-                            ssize_t bytes = send(fds[i].fd, out + sent, (int)(len - sent), 0);
-                            if (bytes > 0) {
-                                sent += bytes;
-                                continue;
+                        if (client->out != NULL && sdslen(client->out) > 0) {
+                            client->out = sdsappendlen(client->out, out, len);
+                        } else {
+                            long sent_bytes = send(fds[i].fd, out, len, 0);
+                            if (sent_bytes < 0) {
+                                if (WOULD_BLOCK(WSAGetLastError())) {
+                                    if (client->out == NULL) client->out = sdsempty();
+                                    client->out = sdsappendlen(client->out, out, len);
+                                    f->events |= POLLOUT;
+                                } else {
+                                    sdsfree(out);
+                                    free_respobj(resp_obj);
+                                    drop_client(fds, clients, &nfds, i--);
+                                    continue;
+                                }
+                            } else if ((size_t) sent_bytes < len) {
+                                if (client->out == NULL) client->out = sdsempty();
+                                client->out = sdsappendlen(client->out, out + sent_bytes, len - sent_bytes);
+                                f->events |= POLLOUT;
                             }
-                            if (bytes < 0) {
-                                continue;
-                            }
-                            break;
                         }
 
                         sdsfree(out);
                         free_respobj(resp_obj);
 
-                        sdsfree(client->pending);
-                        client->pending = 0;
+                        if (next != NULL) {
+                            size_t offset = next - client->pending;
+                            size_t new_len = sdslen(client->pending) - offset;
+
+                            sds tmp = sdsnewlen(next, new_len);
+                            sdsfree(client->pending);
+                            client->pending = tmp;
+                            next = 0;
+                            goto main;
+                        }
                     }
                 }
             }

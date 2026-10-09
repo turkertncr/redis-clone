@@ -230,7 +230,7 @@ static void set_command(resp_object *args, hash_table *db, sds *out) {
 
     int write = 1;
     if (flags & SET_EXISTENCE_MASK)
-        write = ((flags & SET_NX) && existing == NULL) ||((flags & SET_XX) && existing != NULL);
+        write = ((flags & SET_NX) && existing == NULL) || ((flags & SET_XX) && existing != NULL);
 
     if (write) {
         if ((flags & SET_KEEPTTL) && existing != NULL) ttl = existing->expires_at;

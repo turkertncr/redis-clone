@@ -283,7 +283,7 @@ void print_respobj(resp_object* obj, int depth) {
     }
 }
 
-resp_status parse_resp(sds input, const char* end, resp_object** obj_out) {
+resp_status parse_resp(sds input, const char* end, resp_object** obj_out, sds *next) {
     if (input == NULL || input >= end) return INCOMPLETE;
 
     char type = *input;
@@ -299,6 +299,7 @@ resp_status parse_resp(sds input, const char* end, resp_object** obj_out) {
     }
 
     *obj_out = obj;
+    if (tail != NULL) { *next = tail; }
     return status;
 }
 
