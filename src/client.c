@@ -136,5 +136,3 @@ int run_client() {
 
     return 0;
 }
-
-//zrangebyscore car_data:9159:25:55 0 17000000000000000
