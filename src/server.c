@@ -2,11 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
 
-#include "alloc.h"
-#include "queue.h"
-#include "redis_object.h"
+#include <alloc.h>
+#include <queue.h>
+#include <redis_object.h>
+#include <resp_parser.h>
 
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
@@ -40,18 +40,18 @@
 #include <command_handler.h>
 #include <repl.h>
 
-void print_status(const resp_status *status) {
+static void print_status(const resp_status *status) {
     DBG("status: ");
     switch (*status) {
-        case OK: DBG("OK"); break;
-        case INCOMPLETE: DBG("INCOMPLETE"); break;
-        case ERROR: DBG("ERROR"); break;
+        case RESP_OK: DBG("OK"); break;
+        case RESP_INCOMPLETE: DBG("INCOMPLETE"); break;
+        case RESP_ERR: DBG("ERROR"); break;
         default: DBG("UNKNOWN"); break;
     }
     DBG("\n");
 }
 
-void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
+static void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
     sdsfree(clients[i].out);
     sdsfree(clients[i].pending);
     closesocket(fds[i].fd);
@@ -61,11 +61,11 @@ void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
     (*nfds)--;
 }
 
-void parse_inline(sds inline_command, resp_object **args_out, resp_status *status, sds *next) {
+static void parse_inline(sds inline_command, resp_object **args_out, resp_status *status, sds *next) {
     size_t len = sdslen(inline_command);
     char *nl = memchr(inline_command, '\n', len);
     if (nl == NULL) {
-        *status = INCOMPLETE;
+        *status = RESP_INCOMPLETE;
         return;
     }
 
@@ -84,7 +84,7 @@ void parse_inline(sds inline_command, resp_object **args_out, resp_status *statu
     *next = nl + 1;
 }
 
-int is_inline(const sds in) {
+static int is_inline(const sds in) {
     return in[0] == '*' || in[0] == '$';
 }
 
@@ -260,9 +260,9 @@ int init_socket(hash_table *ht, queue *q)
                         continue;
                     }
 
-                    if (status == INCOMPLETE) continue;
+                    if (status == RESP_INCOMPLETE) continue;
 
-                    if (status == OK) {
+                    if (status == RESP_OK) {
                         sds out = sdsempty();
                         size_t offset = next - client->pending;
 

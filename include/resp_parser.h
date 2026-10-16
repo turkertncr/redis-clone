@@ -1,11 +1,7 @@
-//
-// Created by turker on 4.08.2026.
-//
-
 #ifndef REDIS_CLONE_RESP_PARSER_H
 #define REDIS_CLONE_RESP_PARSER_H
 
-#include "data_types/redis_string.h"
+#include <data_types/redis_string.h>
 
 typedef enum {
     RESP_nil = 0,
@@ -17,9 +13,9 @@ typedef enum {
 } resp_type;
 
 typedef enum {
-    INCOMPLETE,
-    OK,
-    ERROR
+    RESP_INCOMPLETE,
+    RESP_OK,
+    RESP_ERR
 } resp_status;
 
 typedef struct resp_object {

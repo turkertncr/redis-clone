@@ -113,9 +113,9 @@ int run_client() {
                     return 1;
                 }
 
-                if (status == INCOMPLETE) { continue; }
+                if (status == RESP_INCOMPLETE) { continue; }
 
-                if (status == OK) {
+                if (status == RESP_OK) {
                     printf("Received: %s\n", pending);
                     sdsfree(pending);
                     pending = 0;

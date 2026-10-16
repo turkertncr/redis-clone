@@ -12,7 +12,7 @@ static void execute_inline(char *args[], size_t args_size) {
 
     resp_object *resp_obj = NULL;
     resp_status status = parse_resp(resp, resp + sdslen(resp), &resp_obj, NULL);
-    if (status != OK) {
+    if (status != RESP_OK) {
         printf("invalid command\n");
         sdsfree(resp);
         return;

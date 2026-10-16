@@ -22,14 +22,14 @@ void aof_read(aof_handler *handler, hash_table *db) {
         do {
             sds next = 0;
             status = parse_resp(buffer + offset, buffer + sdslen(buffer), &args, &next);
-            if (status == OK) {
+            if (status == RESP_OK) {
                 offset = next - buffer;
                 sds out = sdsempty();
                 execute(args, db, &out);
                 // print_respobj(args, 25);
                 // fprintf(stderr, "%s\n", out);
             }
-        } while (status == OK);
+        } while (status == RESP_OK);
     }
     sdsfree(buffer);
 }
@@ -66,7 +66,7 @@ int aof_handler_init(aof_handler *handler, config *cfg, hash_table *db) {
     if (!handler) { return 0; }
 
     sds aof_path = get_config(cfg, "aofpath");
-    handler->file = fopen(aof_path, "a+");
+    handler->file = fopen(aof_path, "ab+");
     if (!handler->file) {
         fprintf(stderr, "%s fopen failed\n", __func__);
         return 0;
