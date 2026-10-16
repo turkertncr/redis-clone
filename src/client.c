@@ -22,10 +22,11 @@ typedef int SOCKET;
 #define WSACleanup() ((void) 0)
 #endif
 
-#include <include/client.h>
-#include <include/server.h>
-#include <include/command_handler.h>
-#include <include/repl.h>
+#include <alloc.h>
+#include <client.h>
+#include <server.h>
+#include <command_handler.h>
+#include <repl.h>
 
 void clear_terminal() {
 #if defined(_WIN32) || defined(_WIN64)
@@ -72,12 +73,12 @@ int run_client() {
 
         struct split splitted = split_cmd(buf);
         if (splitted.len == 0) {
-            free(splitted.args);
+            zfree(splitted.args);
             continue;
         }
 
         if (strcmp(splitted.args[0], "quit") == 0) {
-            free(splitted.args);
+            zfree(splitted.args);
             break;
         }
 
@@ -89,7 +90,7 @@ int run_client() {
         sds req = build_resp(splitted.args, splitted.len);
         send(sock, req, (int) sdslen(req), 0);
 
-        free(splitted.args);
+        zfree(splitted.args);
         sdsfree(req);
 
         while (1) {

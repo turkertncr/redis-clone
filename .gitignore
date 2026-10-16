@@ -35,3 +35,5 @@ redis.conf
 appendonly.aof
 
 /tests
+benchmark.txt
+test.txt

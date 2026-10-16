@@ -1,12 +1,9 @@
-//
-// Created by turker on 18.09.2026.
-//
-
 #ifndef REDIS_CLONE_COMMAND_HANDLER_H
 #define REDIS_CLONE_COMMAND_HANDLER_H
 
-#include "resp_parser.h"
-#include "data_types/hash_table.h"
+#include <resp_parser.h>
+#include <data_types/hash_table.h>
+#include <util.h>
 
 typedef struct {
     sds out;
@@ -22,6 +19,8 @@ typedef void (command_fun)(resp_object *args, hash_table *db, sds *out);
 
 #define CMD_NOAUTH (1 << 0)
 #define CMD_WRITE (1 << 1)
+#define CMD_TTL (1 << 2) // command's AOF propagation IS the TTL; replace raw bytes with PEXPIREAT
+#define CMD_SET_TTL (1 << 3) // command may incidentally set a TTL; append a PEXPIREAT after the raw bytes
 
 #define SET_NX (1 << 0) // adds if key doesnt exists
 #define SET_XX (1 << 1) // adds if key exists
@@ -40,10 +39,9 @@ typedef struct {
     int flags;
 } command;
 
-void append_fmt(sds *out, const char *fmt, ...);
-void append_b(sds *out, sds val);
 void set_required_password(const char *password);
 int auth_required(void);
+void execute(resp_object *args, hash_table *db, sds *out);
 const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, sds *out);
 
 #endif //REDIS_CLONE_COMMAND_HANDLER_H

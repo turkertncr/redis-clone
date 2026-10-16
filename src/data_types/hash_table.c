@@ -1,16 +1,15 @@
 
 #include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include <include/data_types/hash_table.h>
-#include <include/data_types/redis_string.h>
+#include <alloc.h>
+#include <data_types/hash_table.h>
+#include <data_types/redis_string.h>
 
 #define HASH_TABLE_LOAD_FACTOR 0.75
 
 hash_table* ht_create(ht_value_free_fn free_fn, int flags, int capacity) {
-    hash_table *table = malloc(sizeof(*table));
+    hash_table *table = zalloc(sizeof(*table));
     if (table == NULL) return NULL;
 
     table->size = 0;
@@ -18,9 +17,9 @@ hash_table* ht_create(ht_value_free_fn free_fn, int flags, int capacity) {
     table->free_fn = free_fn;
     table->flags = flags;
 
-    table->table = calloc(table->capacity, sizeof(ht_node*));
+    table->table = zcalloc(table->capacity, sizeof(ht_node*));
     if (table->table == NULL) {
-        free(table);
+        zfree(table);
         return NULL;
     }
 
@@ -28,14 +27,14 @@ hash_table* ht_create(ht_value_free_fn free_fn, int flags, int capacity) {
 }
 
 ht_node* ht_node_create(sds key, void *value, int ref) {
-    ht_node *new_node = malloc(sizeof(*new_node));
+    ht_node *new_node = zalloc(sizeof(*new_node));
     if (new_node == NULL) return NULL;
 
     if (ref & REF_MODE) new_node->key = key;
     else new_node->key = sdsdup(key);
 
     if (new_node->key == NULL) {
-        free(new_node);
+        zfree(new_node);
         return NULL;
     }
     new_node->value = value;
@@ -79,7 +78,7 @@ int ht_delete(hash_table *ht, sds key){
             else {
                 sdsfree(current->value);
             }
-            free(current);
+            zfree(current);
             return 1;
         }
         previous = current;
@@ -120,14 +119,46 @@ int ht_put(hash_table *ht, sds key, void *value) {
     inserted->next = ht->table[idx];
     ht->table[idx] = inserted;
     ht->size++;
-    return 1;
+    return 2;
+}
+
+void* ht_put_get_old(hash_table *ht, sds key, void *value, int *is_new) {
+    if (ht == NULL) {
+        if (is_new) *is_new = 0;
+        return NULL;
+    }
+
+    ht_node *entry = ht_node_get(ht, key);
+    if (entry != NULL) {
+        void *old = entry->value;
+        entry->value = value;
+        if (is_new) *is_new = 0;
+        return old;
+    }
+
+    if ((double)(ht->size + 1) / ht->capacity > HASH_TABLE_LOAD_FACTOR) {
+        ht_extend(ht);
+    }
+
+    unsigned long idx = ht_hash(key) % ht->capacity;
+    ht_node* inserted = ht_node_create(key, value, ht->flags);
+    if (inserted == NULL) {
+        if (is_new) *is_new = 0;
+        return NULL;
+    }
+
+    inserted->next = ht->table[idx];
+    ht->table[idx] = inserted;
+    ht->size++;
+    if (is_new) *is_new = 1;
+    return NULL;
 }
 
 void ht_extend(hash_table *ht) {
     int old_capacity = ht->capacity;
     ht_node** old_table = ht->table;
 
-    ht_node** new_table = calloc(old_capacity * 2, sizeof(ht_node*));
+    ht_node** new_table = zcalloc(old_capacity * 2, sizeof(ht_node*));
     if (new_table == NULL) return;
 
     ht->table = new_table;
@@ -140,12 +171,12 @@ void ht_extend(hash_table *ht) {
             ht_node* next = current->next;
             ht_put(ht, current->key, current->value);
             if (!(ht->flags & REF_MODE)) sdsfree(current->key);
-            free(current);
+            zfree(current);
             current = next;
         }
     }
 
-    free(old_table);
+    zfree(old_table);
 }
 
 unsigned long ht_hash(sds key) {
@@ -168,12 +199,12 @@ void ht_free(hash_table *ht) {
             ht_node *next = current->next;
             if (!(ht->flags & REF_MODE)) sdsfree(current->key);
             ht->free_fn(current->value);
-            free(current);
+            zfree(current);
             current = next;
         }
     }
-    free(ht->table);
-    free(ht);
+    zfree(ht->table);
+    zfree(ht);
 }
 
 int ht_exists(hash_table *ht, sds key) {

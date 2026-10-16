@@ -1,10 +1,11 @@
 
 #include <stdlib.h>
 
-#include <include/data_types/skip_list.h>
+#include <alloc.h>
+#include <data_types/skip_list.h>
 
 skiplist* skiplist_create() {
-    skiplist *sl = malloc(sizeof(*sl));
+    skiplist *sl = zalloc(sizeof(*sl));
     if (sl == NULL) return NULL;
 
     sl->top_level = 1;
@@ -20,11 +21,11 @@ void skiplist_free(skiplist* skipl) {
         skiplist_node_free(curr);
         curr = next;
     }
-    free(skipl);
+    zfree(skipl);
 }
 
 skiplist_node* skiplist_node_create(double score, sds member, int level) {
-    skiplist_node *node = malloc(sizeof(*node) + level * sizeof(*node->level_array));
+    skiplist_node *node = zalloc(sizeof(*node) + level * sizeof(*node->level_array));
     if (node == NULL) return NULL;
 
     node->score = score;
@@ -41,7 +42,7 @@ skiplist_node* skiplist_node_create(double score, sds member, int level) {
 
 void skiplist_node_free(skiplist_node* node) {
     sdsfree(node->member);
-    free(node);
+    zfree(node);
 }
 
 int skiplist_rand() {

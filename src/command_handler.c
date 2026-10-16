@@ -1,17 +1,16 @@
 #include <errno.h>
 #include <math.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <include/command_handler.h>
-#include <include/redis_object.h>
-#include <include/data_types/set.h>
-#include <include/data_types/sorted_set.h>
-#include <include/data_types/quick_list.h>
-
-#include "include/aof_handler.h"
+#include <command_handler.h>
+#include <redis_object.h>
+#include <data_types/set.h>
+#include <data_types/sorted_set.h>
+#include <data_types/quick_list.h>
+#include <aof_handler.h>
+#include <util.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #define strcasecmp _stricmp
@@ -20,24 +19,6 @@
 #endif
 
 static sds required_password = NULL;
-
-void append_fmt(sds *out, const char *fmt, ...) {
-    char tmp[256];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
-    va_end(ap);
-    if (n < 0) return;
-    if ((size_t) n >= sizeof(tmp)) n = sizeof(tmp) - 1; /* vsnprintf truncated; don't read past tmp */
-    *out = sdsappendlen(*out, tmp, n);
-}
-
-void append_b(sds *out, sds val) {
-    if (val == NULL) { append_fmt(out, "$-1\r\n"); return; }
-    append_fmt(out, "$%u\r\n", sdslen(val));
-    *out = sdsappendlen(*out, val, sdslen(val));
-    *out = sdsappendlen(*out, "\r\n", 2);
-}
 
 static void append_bulk(sds *out, const redis_object *redis_obj) {
     if (redis_obj == NULL || redis_obj->type != OBJ_STRING) {
@@ -174,6 +155,17 @@ static void ttl_command(resp_object *args, hash_table *db, sds *out) {
     }
     long long ttl = (redis_obj->expires_at - current_time_ms()) / 1000;
     append_fmt(out, ":%lld\r\n", ttl);
+}
+
+static void pexpireat_command(resp_object *args, hash_table *db, sds *out) {
+    redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, 1));
+    if (redis_obj == NULL) {
+        append_fmt(out, ":0\r\n");
+        return;
+    }
+    long long timestamp = strtoll(get_bulk_at(args, 2), NULL, 10);
+    redis_obj->expires_at = timestamp;
+    append_fmt(out, ":1\r\n");
 }
 
 static int parse_set_options(resp_object *args, sds *out, long long *ttl, int *flags) {
@@ -361,8 +353,7 @@ static void hset_command(resp_object *args, hash_table *db, sds *out) {
     int added = 0;
     for (int i = 2; i < argc; i += 2) {
         sds field = get_bulk_at(args, i);
-        if (!ht_exists(hash, field)) added++;
-        ht_put(hash, field, sdsdup(get_bulk_at(args, i + 1)));
+        if (ht_put(hash, field, sdsdup(get_bulk_at(args, i + 1))) == 2) added++;
     }
     append_fmt(out, ":%d\r\n", added);
 }
@@ -664,51 +655,52 @@ static void lindex_command(resp_object *args, hash_table *db, sds *out) {
     *out = sdsappendlen(*out, "\r\n", 2);
 }
 
-static const command commands[] = {
-    {"PING",          -1, ping_command, CMD_NOAUTH},
-    {"ECHO",           2, echo_command},
+static command commands[] = {
+    {"PING", -1, ping_command, CMD_NOAUTH},
+    {"ECHO", 2, echo_command},
 
-    {"EXISTS",        -2, exists_command},
-    {"DEL",           -2, del_command, CMD_WRITE},
-    {"EXPIRE",         3, expire_command, CMD_WRITE},
-    {"TTL",            2, ttl_command},
+    {"EXISTS", -2, exists_command},
+    {"DEL", -2, del_command, CMD_WRITE},
+    {"EXPIRE", 3, expire_command, CMD_WRITE | CMD_TTL},
+    {"TTL", 2, ttl_command},
+    {"PEXPIREAT", 3, pexpireat_command, CMD_WRITE},
 
-    {"SET",            -3, set_command, CMD_WRITE},
-    {"MSET",          -3, mset_command, CMD_WRITE},
-    {"GET",            2, get_command},
-    {"MGET",          -2, mget_command},
-    {"INCR",           2, incr_command, CMD_WRITE},
-    {"DECR",           2, decr_command, CMD_WRITE},
-    {"INCRBY",         3, incrby_command, CMD_WRITE},
-    {"APPEND",         3, append_command, CMD_WRITE},
+    {"SET", -3, set_command, CMD_WRITE | CMD_SET_TTL},
+    {"MSET", -3, mset_command, CMD_WRITE},
+    {"GET", 2, get_command},
+    {"MGET", -2, mget_command},
+    {"INCR", 2, incr_command, CMD_WRITE},
+    {"DECR", 2, decr_command, CMD_WRITE},
+    {"INCRBY", 3, incrby_command, CMD_WRITE},
+    {"APPEND", 3, append_command, CMD_WRITE},
 
-    {"HSET",          -4, hset_command, CMD_WRITE},
-    {"HGET",           3, hget_command},
-    {"HGETALL",        2, hgetall_command},
-    {"HDEL",          -3, hdel_command, CMD_WRITE},
+    {"HSET", -4, hset_command, CMD_WRITE},
+    {"HGET", 3, hget_command},
+    {"HGETALL", 2, hgetall_command},
+    {"HDEL", -3, hdel_command, CMD_WRITE},
 
-    {"SADD",          -3, sadd_command, CMD_WRITE},
-    {"SREM",          -3, srem_command, CMD_WRITE},
-    {"SISMEMBER",      3, sismember_command},
-    {"SMEMBERS",       2, smembers_command},
+    {"SADD", -3, sadd_command, CMD_WRITE},
+    {"SREM", -3, srem_command, CMD_WRITE},
+    {"SISMEMBER", 3, sismember_command},
+    {"SMEMBERS", 2, smembers_command},
 
-    {"ZADD",          -4, zadd_command, CMD_WRITE},
-    {"ZREM",          -3, zrem_command, CMD_WRITE},
-    {"ZRANGEBYSCORE",  4, zrangebyscore_command},
-    {"ZSCORE",         3, zscore_command},
+    {"ZADD", -4, zadd_command, CMD_WRITE},
+    {"ZREM", -3, zrem_command, CMD_WRITE},
+    {"ZRANGEBYSCORE", 4, zrangebyscore_command},
+    {"ZSCORE", 3, zscore_command},
     {"ZCOUNT", 2, zcount_command},
 
-    {"LPUSH",         -3, lpush_command, CMD_WRITE},
-    {"RPUSH",         -3, rpush_command, CMD_WRITE},
-    {"LPUSHX",        -3, lpushx_command, CMD_WRITE},
-    {"RPUSHX",        -3, rpushx_command, CMD_WRITE},
-    {"LPOP",           -2, lpop_command, CMD_WRITE},
-    {"RPOP",           -2, rpop_command, CMD_WRITE},
-    {"LINSERT",        5, linsert_command, CMD_WRITE},
-    {"LLEN",           2, llen_command},
-    {"LREM",           4, lrem_command, CMD_WRITE},
-    {"LRANGE",         4, lrange_command},
-    {"LINDEX",         3, lindex_command},
+    {"LPUSH", -3, lpush_command, CMD_WRITE},
+    {"RPUSH", -3, rpush_command, CMD_WRITE},
+    {"LPUSHX", -3, lpushx_command, CMD_WRITE},
+    {"RPUSHX", -3, rpushx_command, CMD_WRITE},
+    {"LPOP", -2, lpop_command, CMD_WRITE},
+    {"RPOP", -2, rpop_command, CMD_WRITE},
+    {"LINSERT", 5, linsert_command, CMD_WRITE},
+    {"LLEN", 2, llen_command},
+    {"LREM", 4, lrem_command, CMD_WRITE},
+    {"LRANGE", 4, lrange_command},
+    {"LINDEX", 3, lindex_command},
 };
 
 static const size_t ncmd = sizeof(commands) / sizeof(commands[0]);
@@ -767,6 +759,12 @@ static void auth_command(resp_object *args, client_ctx *client, sds *out) {
     } else {
         append_fmt(out, "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
     }
+}
+
+void execute(resp_object *args, hash_table *db, sds *out) {
+    const command *cmd = lookup_command(get_bulk_at(args, 0));
+    if (cmd == NULL) return;
+    cmd->fun(args, db, out);
 }
 
 const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, sds *out) {

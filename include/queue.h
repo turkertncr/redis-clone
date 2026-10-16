@@ -3,7 +3,7 @@
 
 #include <pthread.h>
 
-#include "data_types/redis_string.h"
+#include <data_types/redis_string.h>
 
 typedef struct node {
     struct node *next;

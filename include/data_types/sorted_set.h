@@ -1,8 +1,8 @@
 #ifndef REDIS_CLONE_SORTED_SET_H
 #define REDIS_CLONE_SORTED_SET_H
 
-#include <include/data_types/skip_list.h>
-#include <include/data_types/hash_table.h>
+#include <data_types/skip_list.h>
+#include <data_types/hash_table.h>
 
 typedef struct {
     skiplist* sl;

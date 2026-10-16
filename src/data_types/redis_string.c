@@ -1,14 +1,13 @@
 
-#include <include/data_types/redis_string.h>
-
-#include <stdlib.h>
+#include <alloc.h>
+#include <data_types/redis_string.h>
 #include <string.h>
 
 sds sdsnewlen(const void *init, uint32_t initlen) {
     size_t struct_size = sizeof(struct sdshdr);
     size_t total_size = struct_size + initlen + 1;
 
-    struct sdshdr *sh = malloc(total_size);
+    struct sdshdr *sh = zalloc(total_size);
     if (sh == NULL) { return NULL; }
 
     sh->len = initlen;
@@ -40,7 +39,7 @@ sds sdsdup(const sds s) {
 void sdsfree(sds s) {
     if (s == NULL) return;
     struct sdshdr *sh = (struct sdshdr *) (s - sizeof(struct sdshdr));
-    free(sh);
+    zfree(sh);
 }
 
 uint32_t sdslen(const sds s) {
@@ -90,7 +89,7 @@ sds sdsappendlen(sds s1, const void *s2, size_t len) {
     if (alloc == 0) alloc = newlen;
     else while (alloc < newlen) alloc *= 2;
 
-    struct sdshdr *tmp = realloc(sh, sizeof(struct sdshdr) + alloc + 1);
+    struct sdshdr *tmp = zrealloc(sh, sizeof(struct sdshdr) + alloc + 1);
     if (tmp == NULL) return NULL;
     sh = tmp;
     sh->alloc = alloc;

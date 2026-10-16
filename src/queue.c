@@ -1,7 +1,7 @@
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <include/queue.h>
+#include <alloc.h>
+#include <queue.h>
 
 void queue_init(queue *q) {
     q->head = NULL;
@@ -14,7 +14,7 @@ void queue_init(queue *q) {
 
 node* create_node(sds data) {
     if (!data) { return NULL; }
-    node *n = malloc(sizeof(node));
+    node *n = zalloc(sizeof(node));
     if (!n) { return NULL; }
     n->data = data;
     n->next = NULL;
@@ -70,7 +70,7 @@ sds queue_pop(queue *q) {
     }
 
     pthread_mutex_unlock(&q->mutex);
-    free(head);
+    zfree(head);
     return data;
 }
 
@@ -88,7 +88,7 @@ void queue_destroy(queue *q) {
     while (curr) {
         node* next = curr->next;
         sdsfree(curr->data);
-        free(curr);
+        zfree(curr);
         curr = next;
     }
 

@@ -1,33 +1,34 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <include/resp_parser.h>
+#include <alloc.h>
+#include <resp_parser.h>
 #include <string.h>
 
-void free_respobj(resp_object* obj) {
-    if (obj == NULL) return;
+void free_respobj(resp_object* args) {
+    if (args == NULL) return;
 
-    switch (obj->type) {
+    switch (args->type) {
         case RESP_STRING:
-            sdsfree(obj->str);
+            sdsfree(args->str);
             break;
         case RESP_ERROR:
-            free(obj->str);
+            zfree(args->str);
             break;
         case RESP_BULK:
-            sdsfree(obj->bulk);
+            sdsfree(args->bulk);
             break;
         case RESP_ARRAY:
-            for (int i = 0; i < obj->array.len; i++) {
-                free_respobj(obj->array.ptr[i]);
+            for (int i = 0; i < args->array.len; i++) {
+                free_respobj(args->array.ptr[i]);
             }
-            free(obj->array.ptr);
+            zfree(args->array.ptr);
             break;
         default:
             break;
     }
 
-    free(obj);
+    zfree(args);
 }
 
 void free_array_items(resp_object** ptr, int len) {
@@ -35,10 +36,10 @@ void free_array_items(resp_object** ptr, int len) {
     for (int i = 0; i < len; i++) {
         free_respobj(ptr[i]);
     }
-    free(ptr);
+    zfree(ptr);
 }
 
-resp_status parse_bulk(sds input, const char* end, resp_object* obj, sds* next) {
+resp_status parse_bulk(sds input, const char* end, resp_object* args, sds* next) {
 
     char* f_crlf = strstr(input, "\r\n");
     if (f_crlf == NULL) {
@@ -49,18 +50,18 @@ resp_status parse_bulk(sds input, const char* end, resp_object* obj, sds* next) 
     long long length = strtoll(input + 1, &num_end, 10);
 
     if (num_end != f_crlf) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
     if (length < -1) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
     if (length == -1) {
-        obj->type = RESP_BULK;
-        obj->bulk = NULL;
+        args->type = RESP_BULK;
+        args->bulk = NULL;
         *next = f_crlf + 2;
         return OK;
     }
@@ -71,25 +72,25 @@ resp_status parse_bulk(sds input, const char* end, resp_object* obj, sds* next) 
         return INCOMPLETE;
     }
     if (str[length] != '\r' || str[length + 1] != '\n') {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
     char* x = sdsnewlen(str, length);
     if (x == NULL) {
         printf("Allocation failed");
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
-    obj->type = RESP_BULK;
-    obj->bulk = x;
+    args->type = RESP_BULK;
+    args->bulk = x;
 
     *next = str + length + 2;
     return OK;
 }
 
-resp_status parse_string(sds input, resp_object* obj, sds* next) {
+resp_status parse_string(sds input, resp_object* args, sds* next) {
     char buff[256];
 
     char* crlf = strstr(input, "\r\n");
@@ -98,23 +99,23 @@ resp_status parse_string(sds input, resp_object* obj, sds* next) {
     }
 
     if (sscanf(input, "+%255[^\r\n]", buff) != 1) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
     char* str = sdsnew(buff);
     if (str == NULL) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
-    obj->type = RESP_STRING;
-    obj->str = str;
+    args->type = RESP_STRING;
+    args->str = str;
     *next = crlf + 2;
     return OK;
 }
 
-resp_status parse_error(sds input, resp_object* obj, sds* next) {
+resp_status parse_error(sds input, resp_object* args, sds* next) {
     char buff[256];
 
     char* crlf = strstr(input, "\r\n");
@@ -123,41 +124,41 @@ resp_status parse_error(sds input, resp_object* obj, sds* next) {
     }
 
     if (sscanf(input, "-%255[^\r\n]", buff) != 1) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
     char* str = strdup(buff);
     if (str == NULL) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
-    obj->type = RESP_ERROR;
-    obj->str = str;
+    args->type = RESP_ERROR;
+    args->str = str;
     *next = crlf + 2;
     return OK;
 }
 
-resp_status parse_int(sds input, resp_object* obj, sds* next) {
+resp_status parse_int(sds input, resp_object* args, sds* next) {
 
     char* crlf = strstr(input, "\r\n");
     if (!crlf) {
         return INCOMPLETE;
     }
 
-    if (sscanf(input, ":%lld", &obj->integer) != 1) {
+    if (sscanf(input, ":%lld", &args->integer) != 1) {
         printf("Invalid number format! \n");
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
-    obj->type = RESP_INT;
+    args->type = RESP_INT;
     *next = crlf + 2;
     return OK;
 }
 
-resp_status parse_array(sds input, const char* end, resp_object* obj, sds* next) {
+resp_status parse_array(sds input, const char* end, resp_object* args, sds* next) {
 
     char* crlf = strstr(input, "\r\n");
     if (!crlf) {
@@ -167,42 +168,42 @@ resp_status parse_array(sds input, const char* end, resp_object* obj, sds* next)
     char* num_end;
     long long array_len = strtoll(input + 1, &num_end, 10);
     if (num_end != crlf || array_len < 0) {
-        obj->type = RESP_nil;
+        args->type = RESP_nil;
         return ERROR;
     }
 
     if (array_len == 0) {
-        obj->type = RESP_ARRAY;
-        obj->array.len = 0;
-        obj->array.ptr = NULL;
+        args->type = RESP_ARRAY;
+        args->array.len = 0;
+        args->array.ptr = NULL;
         *next = crlf + 2;
         return OK;
     }
 
-    obj->type = RESP_ARRAY;
-    obj->array.len = (int) array_len;
-    obj->array.ptr = malloc(array_len * sizeof(resp_object*));
-    if (obj->array.ptr == NULL) {
-        obj->type = RESP_nil;
+    args->type = RESP_ARRAY;
+    args->array.len = (int) array_len;
+    args->array.ptr = zalloc(array_len * sizeof(resp_object*));
+    if (args->array.ptr == NULL) {
+        args->type = RESP_nil;
         return ERROR;
     }
 
     char* data = crlf + 2;
     for (int i = 0; i < array_len; i++) {
         if (data >= end) {
-            free_array_items(obj->array.ptr, i);
-            obj->array.ptr = NULL;
-            obj->array.len = 0;
+            free_array_items(args->array.ptr, i);
+            args->array.ptr = NULL;
+            args->array.len = 0;
             return INCOMPLETE;
         }
         char type = data[0];
 
-        resp_object* token = malloc(sizeof(*token));
+        resp_object* token = zalloc(sizeof(*token));
         if (token == NULL) {
-            free_array_items(obj->array.ptr, i);
-            obj->array.ptr = NULL;
-            obj->array.len = 0;
-            obj->type = RESP_nil;
+            free_array_items(args->array.ptr, i);
+            args->array.ptr = NULL;
+            args->array.len = 0;
+            args->type = RESP_nil;
             return ERROR;
         }
         *token = (resp_object){0};
@@ -211,17 +212,17 @@ resp_status parse_array(sds input, const char* end, resp_object* obj, sds* next)
         resp_status status = handle_type(data, end, type, token, &token_next);
         if (status != OK) {
             free_respobj(token);
-            free_array_items(obj->array.ptr, i);
-            obj->array.ptr = NULL;
-            obj->array.len = 0;
+            free_array_items(args->array.ptr, i);
+            args->array.ptr = NULL;
+            args->array.len = 0;
             if (status == INCOMPLETE) {
                 return INCOMPLETE;
             }
-            obj->type = RESP_nil;
+            args->type = RESP_nil;
             return ERROR;
         }
 
-        obj->array.ptr[i] = token;
+        args->array.ptr[i] = token;
         data = token_next;
     }
 
@@ -229,51 +230,51 @@ resp_status parse_array(sds input, const char* end, resp_object* obj, sds* next)
     return OK;
 }
 
-resp_status handle_type(sds input, const char* end, char type, resp_object* obj, sds* next) {
+resp_status handle_type(sds input, const char* end, char type, resp_object* args, sds* next) {
     switch (type) {
         case '+':
-            return parse_string(input, obj, next);
+            return parse_string(input, args, next);
         case '-' :
-            return parse_error(input, obj, next);
+            return parse_error(input, args, next);
         case ':' :
-            return parse_int(input, obj, next);
+            return parse_int(input, args, next);
         case '$' :
-            return parse_bulk(input, end, obj, next);
+            return parse_bulk(input, end, args, next);
         case '*' :
-            return parse_array(input, end, obj, next);
+            return parse_array(input, end, args, next);
         default :
-            obj->type = RESP_nil;
+            args->type = RESP_nil;
             return ERROR;
     }
 }
 
-void print_respobj(resp_object* obj, int depth) {
-    if (obj == NULL) {
+void print_respobj(resp_object* args, int depth) {
+    if (args == NULL) {
         printf("%*s(null)\n", depth * 2, "");
         return;
     }
 
-    switch (obj->type) {
+    switch (args->type) {
         case RESP_INT:
-            printf("%*s(integer) %lld\n", depth * 2, "", obj->integer);
+            printf("%*s(integer) %lld\n", depth * 2, "", args->integer);
             break;
         case RESP_STRING:
-            printf("%*s+%s\n", depth * 2, "", obj->str);
+            printf("%*s+%s\n", depth * 2, "", args->str);
             break;
         case RESP_ERROR:
-            printf("%*s-%s\n", depth * 2, "", obj->str);
+            printf("%*s-%s\n", depth * 2, "", args->str);
             break;
         case RESP_BULK:
-            if (sdslen(obj->bulk) == -1) {
+            if (sdslen(args->bulk) == -1) {
                 printf("%*s(nil)\n", depth * 2, "");
             } else {
-                printf("%*s\"%.*s\"\n", depth * 2, "", sdslen(obj->bulk), obj->bulk);
+                printf("%*s\"%.*s\"\n", depth * 2, "", sdslen(args->bulk), args->bulk);
             }
             break;
         case RESP_ARRAY:
-            printf("%*s(array) len=%d\n", depth * 2, "", obj->array.len);
-            for (int i = 0; i < obj->array.len; i++) {
-                print_respobj(obj->array.ptr[i], depth + 1);
+            printf("%*s(array) len=%d\n", depth * 2, "", args->array.len);
+            for (int i = 0; i < args->array.len; i++) {
+                print_respobj(args->array.ptr[i], depth + 1);
             }
             break;
         case RESP_nil:
@@ -283,22 +284,22 @@ void print_respobj(resp_object* obj, int depth) {
     }
 }
 
-resp_status parse_resp(sds input, const char* end, resp_object** obj_out, sds *next) {
+resp_status parse_resp(sds input, const char* end, resp_object** args_out, sds *next) {
     if (input == NULL || input >= end) return INCOMPLETE;
 
     char type = *input;
-    resp_object* obj = malloc(sizeof(*obj));
-    if (obj == NULL) return ERROR;
-    *obj = (resp_object){0};
+    resp_object* args = zalloc(sizeof(*args));
+    if (args == NULL) return ERROR;
+    *args = (resp_object){0};
 
     sds tail = NULL;
-    resp_status status = handle_type(input, end, type, obj, &tail);
+    resp_status status = handle_type(input, end, type, args, &tail);
     if (status != OK) {
-        free_respobj(obj);
+        free_respobj(args);
         return status;
     }
 
-    *obj_out = obj;
+    *args_out = args;
     if (tail != NULL) { *next = tail; }
     return status;
 }

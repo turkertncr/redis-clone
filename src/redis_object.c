@@ -2,21 +2,17 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
-#include "include/redis_object.h"
+#include "alloc.h"
+#include "redis_object.h"
 
-#include "include/data_types/quick_list.h"
-#include "include/data_types/redis_string.h"
-#include "include/data_types/set.h"
-#include "include/data_types/sorted_set.h"
-
-long long current_time_ms(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return ((long long)tv.tv_sec * 1000) + (tv.tv_usec / 1000);
-}
+#include "util.h"
+#include "data_types/quick_list.h"
+#include "data_types/redis_string.h"
+#include "data_types/set.h"
+#include "data_types/sorted_set.h"
 
 redis_object* create_redis_object(redis_type type, void* ptr, long long expires_at) {
-    redis_object* obj = malloc(sizeof(*obj));
+    redis_object* obj = zalloc(sizeof(*obj));
     if (!obj) return NULL;
 
     obj->type = type;
@@ -27,11 +23,11 @@ redis_object* create_redis_object(redis_type type, void* ptr, long long expires_
         case OBJ_SET: obj->ptr = set_create(); break;
         case OBJ_LIST: obj->ptr = quicklist_create(); break;
         case OBJ_ZSET: obj->ptr = zset_create(); break;
-        default: free(obj); return NULL;
+        default: zfree(obj); return NULL;
     }
 
     if (obj->ptr == NULL) {
-        free(obj);
+        zfree(obj);
         return NULL;
     }
 
@@ -64,6 +60,6 @@ void redis_object_free(redis_object *obj) {
         case OBJ_SET: set_free(obj->ptr); break;
         case OBJ_HASH: ht_free(obj->ptr); break;
     }
-    free(obj);
+    zfree(obj);
 }
 

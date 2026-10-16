@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef char* sds;
+typedef char *sds;
 
 struct __attribute__((__packed__)) sdshdr {
     uint32_t len;

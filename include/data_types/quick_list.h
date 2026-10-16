@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#include "zip_list.h"
-#include "redis_string.h"
+#include <data_types/zip_list.h>
+#include <data_types/redis_string.h>
 
 #define QL_MAX_BYTES 8192
 

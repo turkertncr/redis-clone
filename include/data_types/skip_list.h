@@ -1,11 +1,7 @@
-//
-// Created by turker on 16.08.2026.
-//
-
 #ifndef REDIS_CLONE_SKIPL_LIST_H
 #define REDIS_CLONE_SKIPL_LIST_H
 
-#include <include/data_types/redis_string.h>
+#include <data_types/redis_string.h>
 
 #define P 0.25
 #define MAX_LEVEL 32

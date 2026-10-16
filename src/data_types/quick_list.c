@@ -2,11 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <include/data_types/quick_list.h>
-#include <include/data_types/zip_list.h>
+#include <alloc.h>
+#include <data_types/quick_list.h>
+#include <data_types/zip_list.h>
 
 quicklist* quicklist_create() {
-    quicklist *ql = malloc(sizeof(*ql));
+    quicklist *ql = zalloc(sizeof(*ql));
     if (ql == NULL) return NULL;
 
     ql->head = ql->tail = NULL;
@@ -16,7 +17,7 @@ quicklist* quicklist_create() {
 }
 
 quicklist_node* create_quicklist_node() {
-    quicklist_node *node = malloc(sizeof(*node));
+    quicklist_node *node = zalloc(sizeof(*node));
     if (node == NULL) return NULL;
 
     node->prev = node->next = NULL;
@@ -99,7 +100,7 @@ int quicklist_pop_tail(quicklist *ql) {
         }
         ql->len--;
         ziplist_free(node->zl);
-        free(node);
+        zfree(node);
     }
     return 1;
 }
@@ -122,7 +123,7 @@ int quicklist_pop_head(quicklist *ql) {
         }
         ql->len--;
         ziplist_free(node->zl);
-        free(node);
+        zfree(node);
     }
     return 1;
 }
@@ -132,10 +133,10 @@ void quicklist_free(quicklist *ql) {
     while (head) {
         quicklist_node *next = head->next;
         ziplist_free(head->zl);
-        free(head);
+        zfree(head);
         head = next;
     }
-    free(ql);
+    zfree(ql);
 }
 
 static quicklist_node* quicklist_unlink_node(quicklist *ql, quicklist_node *node);
@@ -219,7 +220,7 @@ static quicklist_node* quicklist_unlink_node(quicklist *ql, quicklist_node *node
     if (next) { next->prev = prev; } else { ql->tail = prev; }
 
     ziplist_free(node->zl);
-    free(node);
+    zfree(node);
     ql->len--;
 
     return next;

@@ -3,43 +3,32 @@ project(redis_clone C)
 
 set(CMAKE_C_STANDARD 99)
 
-add_executable(redis_clone main.c
-        include/data_types/hash_table.h
-        src/data_types/hash_table.c
-        include/resp_parser.h
-        src/resp_parser.c
-        include/redis_object.h
-        src/redis_object.c
-        include/server.h
-        src/server.c
-        include/data_types/quick_list.h
-        include/data_types/zip_list.h
-        src/data_types/zip_list.c
-        src/data_types/quick_list.c
-        include/data_types/redis_string.h
-        src/data_types/redis_string.c
-        include/data_types/skip_list.h
-        src/data_types/skip_list.c
-        include/data_types/sorted_set.h
-        src/data_types/sorted_set.c
-        include/data_types/set.h
-        src/data_types/set.c
-        include/repl.h
-        src/repl.c
-        include/client.h
-        src/client.c
-        src/command_handler.c
-        include/command_handler.h
-        src/config.c
-        include/config.h
-        src/aof_handler.c
-        include/aof_handler.h
-        include/queue.h
-        src/queue.c
-)
+option(JEMALLOC "Use jemalloc as the allocator" ON)
 
-target_include_directories(redis_clone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+file(GLOB_RECURSE SOURCES
+        "src/*.c"
+        "include/*.h"
+        "main.c"
+)
+add_executable(redis_clone ${SOURCES}
+        include/util.h
+        src/util.c)
+target_include_directories(redis_clone PRIVATE include)
 
 if(WIN32)
     target_link_libraries(redis_clone PRIVATE ws2_32)
+endif()
+
+if(JEMALLOC)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(JEMALLOC_PKG REQUIRED jemalloc)
+
+    if(JEMALLOC_PKG_FOUND)
+        target_include_directories(redis_clone SYSTEM PRIVATE ${JEMALLOC_PKG_INCLUDE_DIRS})
+        target_link_libraries(redis_clone PRIVATE ${JEMALLOC_PKG_LIBRARIES})
+        target_compile_definitions(redis_clone PRIVATE USE_JEMALLOC=1)
+        message(STATUS "Jemalloc wired! ${JEMALLOC_PKG_INCLUDE_DIRS}")
+    else()
+        message(FATAL_ERROR "Jemalloc wiring failed!")
+    endif()
 endif()

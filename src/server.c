@@ -4,7 +4,9 @@
 #include <string.h>
 #include <fcntl.h>
 
-#include "include/queue.h"
+#include "alloc.h"
+#include "queue.h"
+#include "redis_object.h"
 
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
@@ -15,6 +17,7 @@
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
@@ -33,11 +36,11 @@
 
 #define DBG(fmt, ...) fprintf(stderr, "%s:%d:%s(): " fmt, __FILE__, __LINE__, __func__ )
 
-#include <include/server.h>
-#include <include/command_handler.h>
-#include <include/repl.h>
+#include <server.h>
+#include <command_handler.h>
+#include <repl.h>
 
-void print_status(resp_status *status) {
+void print_status(const resp_status *status) {
     DBG("status: ");
     switch (*status) {
         case OK: DBG("OK"); break;
@@ -48,18 +51,9 @@ void print_status(resp_status *status) {
     DBG("\n");
 }
 
-void handle_client_request(const SOCKET* client_sock, resp_object* resp_obj, hash_table* ht, client_ctx* client)
-{
-    sds out = sdsempty();
-    execute_command(resp_obj, ht, client, &out);
-
-    if (sdslen(out) > 0) {
-        send(*client_sock, out, (int) sdslen(out), 0);
-    }
-    sdsfree(out);
-}
-
 void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
+    sdsfree(clients[i].out);
+    sdsfree(clients[i].pending);
     closesocket(fds[i].fd);
     fds[i] = fds[*nfds - 1];
     clients[i] = clients[*nfds - 1];
@@ -67,22 +61,47 @@ void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
     (*nfds)--;
 }
 
-void parse_inline(client_ctx *client, resp_object *resp_obj, resp_status *status) {
-    struct split splitted = split_cmd(client->pending);
+void parse_inline(sds inline_command, resp_object **args_out, resp_status *status, sds *next) {
+    size_t len = sdslen(inline_command);
+    char *nl = memchr(inline_command, '\n', len);
+    if (nl == NULL) {
+        *status = INCOMPLETE;
+        return;
+    }
+
+    char *line_end = nl;
+    if (line_end > inline_command && line_end[-1] == '\r') line_end--;
+
+    sds line = sdsnewlen(inline_command, line_end - inline_command);
+    struct split splitted = split_cmd(line);
     sds resp = build_resp(splitted.args, splitted.len);
     sds discard = NULL;
-    *status = parse_resp(resp, resp + sdslen(resp), &resp_obj, &discard);
+    *status = parse_resp(resp, resp + sdslen(resp), args_out, &discard);
     sdsfree(resp);
-    free(splitted.args);
+    sdsfree(line);
+    zfree(splitted.args);
+
+    *next = nl + 1;
 }
 
-int is_inline(sds in) {
+int is_inline(const sds in) {
     return in[0] == '*' || in[0] == '$';
+}
+
+static void propagate_ttl_correction(queue *q, hash_table *ht, sds key) {
+    redis_object *obj = lookup_redis_object(ht, key);
+    if (obj == NULL || obj->expires_at == -1) return;
+
+    sds aof_pexpire = sdsempty();
+    append_fmt(&aof_pexpire, "*3\r\n$9\r\nPEXPIREAT\r\n");
+    append_b(&aof_pexpire, key);
+    append_fmt(&aof_pexpire, "$%d\r\n%lld\r\n", snprintf(NULL, 0, "%lld", obj->expires_at), obj->expires_at);
+    queue_push(q, aof_pexpire);
 }
 
 int init_socket(hash_table *ht, queue *q)
 {
-    if (!ht || !q) return 1;
+    if (!ht) return 1;
 
     SOCKET server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
@@ -164,6 +183,14 @@ int init_socket(hash_table *ht, queue *q)
                 int flags = fcntl(client_socket, F_GETFL, 0);
                 fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
             #endif
+
+            #ifdef _WIN32
+                setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, (const char *)&opt, sizeof(opt));
+            #else
+                if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) < 0) {
+                    perror("setsockopt TCP_NODELAY failed");
+                }
+            #endif
                 fds[nfds].fd = client_socket;
                 fds[nfds].events = POLLIN;
                 fds[nfds].revents = 0;
@@ -211,7 +238,7 @@ int init_socket(hash_table *ht, queue *q)
                 } else {
                     buff[read_bytes] = '\0';
 
-                    resp_object *resp_obj = NULL;
+                    resp_object *args = NULL;
                     resp_status status;
 
                     if (client->pending == NULL) client->pending = sdsnewlen(buff, read_bytes);
@@ -221,9 +248,9 @@ int init_socket(hash_table *ht, queue *q)
                     sds next = NULL;
                     if (sdslen(client->pending) == 0) continue;
                     if (!is_inline(client->pending)) {
-                        parse_inline(client, resp_obj, &status);
+                        parse_inline(client->pending, &args, &status, &next);
                     } else {
-                        status = parse_resp(client->pending, client->pending + sdslen(client->pending), &resp_obj, &next);
+                        status = parse_resp(client->pending, client->pending + sdslen(client->pending), &args, &next);
                     }
 
                     if (status == ERROR) {
@@ -237,9 +264,17 @@ int init_socket(hash_table *ht, queue *q)
 
                     if (status == OK) {
                         sds out = sdsempty();
+                        size_t offset = next - client->pending;
 
-                        const command *cmd = execute_command(resp_obj, ht, &clients[i], &out);
-                        if (cmd && (cmd->flags & CMD_WRITE) && out[0] != '-') queue_push(q, sdsnew(buff));
+                        const command *cmd = execute_command(args, ht, &clients[i], &out);
+                        if (cmd && (cmd->flags & CMD_WRITE) && out[0] != '-' && q) {
+                            if (!(cmd->flags & CMD_TTL)) {
+                                queue_push(q, sdsnewlen(client->pending, offset));
+                            }
+                            if (cmd->flags & (CMD_TTL | CMD_SET_TTL)) {
+                                propagate_ttl_correction(q, ht, get_bulk_at(args, 1));
+                            }
+                        }
 
                         size_t len = sdslen(out);
                         if (client->out != NULL && sdslen(client->out) > 0) {
@@ -253,7 +288,7 @@ int init_socket(hash_table *ht, queue *q)
                                     f->events |= POLLOUT;
                                 } else {
                                     sdsfree(out);
-                                    free_respobj(resp_obj);
+                                    free_respobj(args);
                                     drop_client(fds, clients, &nfds, i--);
                                     continue;
                                 }
@@ -265,10 +300,9 @@ int init_socket(hash_table *ht, queue *q)
                         }
 
                         sdsfree(out);
-                        free_respobj(resp_obj);
+                        free_respobj(args);
 
                         if (next != NULL) {
-                            size_t offset = next - client->pending;
                             size_t new_len = sdslen(client->pending) - offset;
 
                             sds tmp = sdsnewlen(next, new_len);

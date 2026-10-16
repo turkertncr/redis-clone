@@ -1,15 +1,10 @@
-//
-// Created by turker on 18.09.2026.
-//
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "include/data_types/hash_table.h"
-#include "include/data_types/redis_string.h"
-
-static hash_table *options;
+#include <config.h>
+#include <data_types/hash_table.h>
+#include <alloc.h>
 
 static char** parse(char *str) {
     size_t len = strlen(str);
@@ -29,7 +24,7 @@ static char** parse(char *str) {
         value++;
     }
 
-    char **result = malloc(sizeof(char*) * 2);
+    char **result = zalloc(sizeof(char*) * 2);
     if (!result) {
         return NULL;
     }
@@ -38,7 +33,7 @@ static char** parse(char *str) {
     return result;
 }
 
-static int read_file(const char *path) {
+static int read_file(config *cfg, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
         fprintf(stderr, "Can't open file %s\n", path);
@@ -47,26 +42,27 @@ static int read_file(const char *path) {
 
     char buf[1024];
     while (fgets(buf, sizeof(buf), f)) {
+        if (buf[0] == '#') continue;
         char **o = parse(buf);
         if (o) {
-            ht_put(options, o[0], o[1]);
+            ht_put(cfg->options, o[0], o[1]);
         }
     }
     return 1;
 }
 
-int init_config(const char *path) {
-    options = ht_create(NULL, 0, HT_DEFAULT_CAPACITY);
-    return read_file(path ? path : "redis.conf");
+int init_config(config *cfg, const char *path) {
+    cfg->options = ht_create((ht_value_free_fn) sdsfree, 0, HT_MEDIUM_CAPACITY);
+    return read_file(cfg, path ? path : "redis.conf");
 }
 
-char* get_config(char *key) {
+sds get_config(config *cfg, char *key) {
     if (!key) {
         fprintf(stderr, "Invalid find config key %s\n", key);
         return 0;
     }
     sds lookup_key = sdsnew(key);
-    char *config = ht_get(options, lookup_key);
+    char *config = ht_get(cfg->options, lookup_key);
     sdsfree(lookup_key);
     if (!config) {
         fprintf(stderr, "Can't find config key %s\n", key);

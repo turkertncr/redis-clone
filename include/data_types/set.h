@@ -1,11 +1,8 @@
-//
-// Created by turker on 18.08.2026.
-//
 
 #ifndef REDIS_CLONE_SET_H
 #define REDIS_CLONE_SET_H
 
-#include <include/data_types/hash_table.h>
+#include <data_types/hash_table.h>
 
 typedef struct {
     hash_table* ht;

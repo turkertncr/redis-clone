@@ -1,13 +1,13 @@
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include <include/data_types/zip_list.h>
+#include <alloc.h>
+#include <data_types/zip_list.h>
 
 ziplist ziplist_create() {
     size_t total = hdrsize + 1;
-    struct zlhdr *zlhdr = malloc(total);
+    struct zlhdr *zlhdr = zalloc(total);
     if (zlhdr == NULL) { return NULL; }
 
     zlhdr->zllen = 0;
@@ -85,7 +85,7 @@ ziplist ziplist_head_push(ziplist zl, const char* data, uint32_t data_len) {
     uint32_t old_tail_offset = hdr->zltail;
     uint16_t old_len = hdr->zllen;
 
-    struct zlhdr *tmp = realloc(hdr, new_bytes);
+    struct zlhdr *tmp = zrealloc(hdr, new_bytes);
     if (tmp == NULL) { return NULL; }
     hdr = tmp;
 
@@ -126,7 +126,7 @@ ziplist ziplist_tail_push(ziplist zl, const char* data, uint32_t data_len) {
     size_t new_entry_size = zlentry_hdrsize + data_len;
     size_t new_bytes = old_bytes + new_entry_size;
 
-    struct zlhdr *tmp = realloc(hdr, new_bytes);
+    struct zlhdr *tmp = zrealloc(hdr, new_bytes);
     if (tmp == NULL) { return NULL; }
     hdr = tmp;
 
@@ -164,7 +164,7 @@ ziplist ziplist_head_pop(ziplist zl) {
     uint16_t old_len = hdr->zllen;
     uint32_t old_tail = hdr->zltail;
 
-    struct zlhdr *tmp = realloc(hdr, new_bytes);
+    struct zlhdr *tmp = zrealloc(hdr, new_bytes);
     if (tmp == NULL) { return NULL; }
     hdr = tmp;
 
@@ -188,7 +188,7 @@ ziplist ziplist_tail_pop(ziplist zl) {
     uint32_t new_bytes = hdr->zlbytes - entry_size;
     uint16_t old_len = hdr->zllen;
 
-    struct zlhdr *tmp = realloc(hdr, new_bytes);
+    struct zlhdr *tmp = zrealloc(hdr, new_bytes);
     if (tmp == NULL) { return NULL; }
     hdr = tmp;
 
@@ -217,7 +217,7 @@ ziplist ziplist_insert(ziplist zl, const char *pivot, uint32_t pivot_size, const
     size_t old_bytes = hdr->zlbytes;
     size_t new_bytes = old_bytes + entry_size;
 
-    struct zlhdr *tmp = realloc(hdr, new_bytes);
+    struct zlhdr *tmp = zrealloc(hdr, new_bytes);
     if (tmp == NULL) { return NULL; }
     hdr = tmp;
 
@@ -286,7 +286,7 @@ static struct zlhdr* ziplist_remove_at(struct zlhdr *hdr, struct zlentry *entry)
     uint32_t old_tail = hdr->zltail;
     uint16_t new_len = hdr->zllen - 1;
 
-    struct zlhdr *tmp = realloc(hdr, new_bytes);
+    struct zlhdr *tmp = zrealloc(hdr, new_bytes);
     if (tmp == NULL) { return NULL; }
     hdr = tmp;
 
@@ -329,5 +329,5 @@ ziplist ziplist_remove(ziplist zl, const char *data, uint32_t data_len, int coun
 void ziplist_free(ziplist zl) {
     struct zlhdr *hdr = getzlhdr(zl);
     if (hdr == NULL) { return; }
-    free(hdr);
+    zfree(hdr);
 }
