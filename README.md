@@ -46,11 +46,11 @@ The server reads `redis.conf` (plain `key value` lines) from the current working
 
 ```
 requirepass yourpassword
-aof_path appendonly.aof
+aofpath appendonly.aof
 ```
 
 - `requirepass` — if set, clients must `AUTH <password>` before running any command other than `PING`/`AUTH`.
-- `aof_path` — if set, write commands are appended to this file as they're executed. If omitted, AOF logging is disabled entirely.
+- `aofpath` — if set, write commands are appended to this file as they're executed. If omitted, AOF logging is disabled entirely.
 
 If `redis.conf` is missing, startup fails, so run the binary from a directory containing it (or an empty `redis.conf` for a no-auth, no-AOF setup).
 
