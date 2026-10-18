@@ -5,7 +5,7 @@
 #include <resp_parser.h>
 #include <string.h>
 
-void free_respobj(resp_object* args) {
+void free_respobj(resp_value* args) {
     if (args == NULL) return;
 
     switch (args->type) {
@@ -31,7 +31,7 @@ void free_respobj(resp_object* args) {
     zfree(args);
 }
 
-void free_array_items(resp_object** ptr, int len) {
+void free_array_items(resp_value** ptr, int len) {
     if (ptr == NULL) return;
     for (int i = 0; i < len; i++) {
         free_respobj(ptr[i]);
@@ -39,7 +39,7 @@ void free_array_items(resp_object** ptr, int len) {
     zfree(ptr);
 }
 
-resp_status parse_bulk(sds input, const char* end, resp_object* args, sds* next) {
+resp_status parse_bulk(sds input, const char* end, resp_value* args, sds* next) {
 
     char* f_crlf = strstr(input, "\r\n");
     if (f_crlf == NULL) {
@@ -90,7 +90,7 @@ resp_status parse_bulk(sds input, const char* end, resp_object* args, sds* next)
     return RESP_OK;
 }
 
-resp_status parse_string(sds input, resp_object* args, sds* next) {
+resp_status parse_string(sds input, resp_value* args, sds* next) {
     char buff[256];
 
     char* crlf = strstr(input, "\r\n");
@@ -115,7 +115,7 @@ resp_status parse_string(sds input, resp_object* args, sds* next) {
     return RESP_OK;
 }
 
-resp_status parse_error(sds input, resp_object* args, sds* next) {
+resp_status parse_error(sds input, resp_value* args, sds* next) {
     char buff[256];
 
     char* crlf = strstr(input, "\r\n");
@@ -140,7 +140,7 @@ resp_status parse_error(sds input, resp_object* args, sds* next) {
     return RESP_OK;
 }
 
-resp_status parse_int(sds input, resp_object* args, sds* next) {
+resp_status parse_int(sds input, resp_value* args, sds* next) {
 
     char* crlf = strstr(input, "\r\n");
     if (!crlf) {
@@ -158,7 +158,7 @@ resp_status parse_int(sds input, resp_object* args, sds* next) {
     return RESP_OK;
 }
 
-resp_status parse_array(sds input, const char* end, resp_object* args, sds* next) {
+resp_status parse_array(sds input, const char* end, resp_value* args, sds* next) {
 
     char* crlf = strstr(input, "\r\n");
     if (!crlf) {
@@ -182,7 +182,7 @@ resp_status parse_array(sds input, const char* end, resp_object* args, sds* next
 
     args->type = RESP_ARRAY;
     args->array.len = (int) array_len;
-    args->array.ptr = zalloc(array_len * sizeof(resp_object*));
+    args->array.ptr = zalloc(array_len * sizeof(resp_value*));
     if (args->array.ptr == NULL) {
         args->type = RESP_nil;
         return RESP_ERR;
@@ -198,7 +198,7 @@ resp_status parse_array(sds input, const char* end, resp_object* args, sds* next
         }
         char type = data[0];
 
-        resp_object* token = zalloc(sizeof(*token));
+        resp_value* token = zalloc(sizeof(*token));
         if (token == NULL) {
             free_array_items(args->array.ptr, i);
             args->array.ptr = NULL;
@@ -206,7 +206,7 @@ resp_status parse_array(sds input, const char* end, resp_object* args, sds* next
             args->type = RESP_nil;
             return RESP_ERR;
         }
-        *token = (resp_object){0};
+        *token = (resp_value){0};
 
         sds token_next = NULL;
         resp_status status = handle_type(data, end, type, token, &token_next);
@@ -230,7 +230,7 @@ resp_status parse_array(sds input, const char* end, resp_object* args, sds* next
     return RESP_OK;
 }
 
-resp_status handle_type(sds input, const char* end, char type, resp_object* args, sds* next) {
+resp_status handle_type(sds input, const char* end, char type, resp_value* args, sds* next) {
     switch (type) {
         case '+':
             return parse_string(input, args, next);
@@ -248,7 +248,7 @@ resp_status handle_type(sds input, const char* end, char type, resp_object* args
     }
 }
 
-void print_respobj(resp_object* args, int depth) {
+void print_respobj(resp_value* args, int depth) {
     if (args == NULL) {
         printf("%*s(null)\n", depth * 2, "");
         return;
@@ -284,13 +284,13 @@ void print_respobj(resp_object* args, int depth) {
     }
 }
 
-resp_status parse_resp(sds input, const char* end, resp_object** args_out, sds *next) {
+resp_status parse_resp(sds input, const char* end, resp_value** args_out, sds *next) {
     if (input == NULL || input >= end) return RESP_INCOMPLETE;
 
     char type = *input;
-    resp_object* args = zalloc(sizeof(*args));
+    resp_value* args = zalloc(sizeof(*args));
     if (args == NULL) return RESP_ERR;
-    *args = (resp_object){0};
+    *args = (resp_value){0};
 
     sds tail = NULL;
     resp_status status = handle_type(input, end, type, args, &tail);
@@ -304,9 +304,9 @@ resp_status parse_resp(sds input, const char* end, resp_object** args_out, sds *
     return status;
 }
 
-sds get_bulk_at(resp_object* resp_obj, int index) {
+sds get_bulk_at(resp_value* resp_obj, int index) {
     if (index < 0 || index >= resp_obj->array.len) { return NULL; }
-    const resp_object *resp = resp_obj->array.ptr[index];
+    const resp_value *resp = resp_obj->array.ptr[index];
     if (resp->type != RESP_BULK) { return NULL; }
     return resp->bulk;
 }

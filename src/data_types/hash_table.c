@@ -87,6 +87,25 @@ int ht_delete(hash_table *ht, sds key){
     return 0;
 }
 
+int node_depth(ht_node *node) {
+    int n = 0;
+    ht_node *current = node;
+    while (current != NULL) {
+        current = current->next;
+        n++;
+    }
+    return n;
+}
+
+ht_node* walk_node(ht_node *node, int steps) {
+    ht_node *current = node;
+    while (current != NULL && steps > 0) {
+        current = current->next;
+        steps--;
+    }
+    return current;
+}
+
 void* ht_get(hash_table *ht, sds key) {
     ht_node *node = ht_node_get(ht, key);
     if (node != NULL) {

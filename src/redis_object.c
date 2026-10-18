@@ -1,18 +1,17 @@
 
 #include <stdlib.h>
-#include <sys/time.h>
-
 #include "alloc.h"
 #include "redis_object.h"
 
+#include "server.h"
 #include "util.h"
 #include "data_types/quick_list.h"
 #include "data_types/redis_string.h"
 #include "data_types/set.h"
 #include "data_types/sorted_set.h"
 
-redis_object* create_redis_object(redis_type type, void* ptr, long long expires_at) {
-    redis_object* obj = zalloc(sizeof(*obj));
+robj* create_robj(robj_type type, void* ptr, long long expires_at) {
+    robj* obj = zalloc(sizeof(*obj));
     if (!obj) return NULL;
 
     obj->type = type;
@@ -35,22 +34,7 @@ redis_object* create_redis_object(redis_type type, void* ptr, long long expires_
     return obj;
 }
 
-redis_object* lookup_redis_object(hash_table* ht, sds key) {
-    ht_node* hn = ht_node_get(ht, key);
-    if (hn == NULL) { return NULL; }
-
-    redis_object* obj = (redis_object*)hn->value;
-    if (obj == NULL) return NULL;
-
-    if (obj->expires_at == -1 || obj->expires_at > current_time_ms()) {
-        return obj;
-    }
-
-    ht_delete(ht, key);
-    return NULL;
-}
-
-void redis_object_free(redis_object *obj) {
+void robj_free(robj *obj) {
     if (obj == NULL) return;
 
     switch (obj->type) {

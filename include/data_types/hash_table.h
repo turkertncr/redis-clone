@@ -38,5 +38,7 @@ unsigned long ht_hash(sds key);
 void ht_free(hash_table* ht);
 int ht_exists(hash_table* ht, sds key);
 void ht_foreach(hash_table* ht, ht_iter_fn fn, void* user_data);
+int node_depth(ht_node *node);
+ht_node* walk_node(ht_node *node, int steps);
 
 #endif //REDIS_CLONE_HASH_TABLE_H

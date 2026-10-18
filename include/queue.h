@@ -5,6 +5,12 @@
 
 #include <data_types/redis_string.h>
 
+typedef enum {
+    OK,
+    TIMEOUT,
+    SHUTDOWN,
+} queue_status;
+
 typedef struct node {
     struct node *next;
     sds data;
@@ -21,7 +27,7 @@ typedef struct queue {
 node* create_node(sds data);
 void queue_init(queue *q);
 void queue_push(queue *q, sds data);
-sds queue_pop(queue *q);
+queue_status queue_pop(queue *q, sds *out);
 void queue_shutdown(queue *q);
 void queue_destroy(queue *q);
 

@@ -1,6 +1,7 @@
 #ifndef REDIS_CLONE_CONFIG_H
 #define REDIS_CLONE_CONFIG_H
-#include "data_types/hash_table.h"
+
+#include <data_types/hash_table.h>
 
 typedef struct {
     hash_table *options;

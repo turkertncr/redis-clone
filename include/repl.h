@@ -1,10 +1,9 @@
 #ifndef REDIS_CLONE_REPL_H
 #define REDIS_CLONE_REPL_H
 
-#include "data_types/hash_table.h"
-#include <util.h>
+#include "server.h"
 
-void repl_init(hash_table *ht);
+void repl_init(redis_db *db);
 void execute_with_str(char *args);
 
 #endif //REDIS_CLONE_REPL_H

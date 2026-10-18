@@ -1,14 +1,16 @@
 
 #include <ctype.h>
 #include <stdio.h>
-#include <redis_object.h>
 #include <server.h>
 #include <config.h>
 #include <aof_handler.h>
 #include <command_handler.h>
 
+
+
 int main(int argc, char **argv) {
-    hash_table *ht = ht_create((ht_value_free_fn) redis_object_free, 0, HT_DEFAULT_CAPACITY);
+    redis_db redis_db;
+    db_init(&redis_db);
 
     config cfg;
     const char *cfg_path = argc > 1 ? argv[1] : "redis.conf";
@@ -23,11 +25,11 @@ int main(int argc, char **argv) {
     }
 
     aof_handler aof_handler;
-    if (!aof_handler_init(&aof_handler, &cfg, ht)) {
+    if (!aof_handler_init(&aof_handler, &cfg, &redis_db)) {
         fprintf(stderr, "aof_handler initialization failed\n");
         return 0;
     }
     int enabled = sdscmp(get_config(&cfg, "appendonly"), sdsnew("yes")) == 0;
-    if (enabled) return init_socket(ht, &aof_handler.queue);
-    return init_socket(ht, NULL);
+    if (enabled) return init_socket(&redis_db, &aof_handler.queue);
+    return init_socket(&redis_db, NULL);
 }

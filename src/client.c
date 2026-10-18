@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util.h"
+
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -28,12 +30,32 @@ typedef int SOCKET;
 #include <command_handler.h>
 #include <repl.h>
 
-void clear_terminal() {
+static void clear_terminal() {
 #if defined(_WIN32) || defined(_WIN64)
         system("cls");
 #else
         system("clear");
 #endif
+}
+
+int init_sock(SOCKET *sock) {
+    if ((*sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == INVALID_SOCKET_VAL) {
+        printf("Could not create socket: %d\n", WSAGetLastError());
+        WSACleanup();
+        return 1;
+    }
+    return 0;
+}
+
+int connect_sock(SOCKET *sock, struct sockaddr_in *server_addr) {
+    if (connect(*sock, (struct sockaddr *) server_addr, sizeof(struct sockaddr_in)) == SOCKET_ERROR) {
+        fprintf(stderr, "Could not connect to server on port %d: %d\n", PORT, WSAGetLastError());
+        closesocket(*sock);
+        WSACleanup();
+        *sock = INVALID_SOCKET_VAL;
+        return 1;
+    }
+    return 0;
 }
 
 int run_client() {
@@ -48,22 +70,14 @@ int run_client() {
     }
 #endif
 
-    if ((sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == INVALID_SOCKET_VAL) {
-        printf("Could not create socket: %d\n", WSAGetLastError());
-        WSACleanup();
-        return 1;
-    }
+    init_sock(&sock);
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
 
-    if (connect(sock, (struct sockaddr *) &server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        printf("Could not connect to server on port %d: %d\n", PORT, WSAGetLastError());
-        closesocket(sock);
-        WSACleanup();
-        return 1;
-    }
+    fprintf(stderr, "sa \n");
+    if (connect_sock(&sock, &server_addr) != 0) { return 1; }
 
     sds pending = 0;
     resp_status status;
@@ -101,11 +115,11 @@ int run_client() {
                 if (!pending) pending = sdsnewlen(buf, received);
                 else pending = sdsappendlen(pending, buf, received);
 
-                resp_object *resp = 0;
+                resp_value *resp = 0;
                 sds next;
                 status = parse_resp(pending, pending + sdslen(pending), &resp, &next);
 
-                if (status == ERROR) {
+                if (status == RESP_ERR) {
                     sdsfree(pending);
                     pending = 0;
                     free_respobj(resp);
@@ -124,6 +138,11 @@ int run_client() {
                 }
             } else {
                 printf("No response from server.\n");
+                /*init_sock(&sock);
+                if (connect_sock(&sock, &server_addr) == 0) {
+                    fprintf(stderr, "Connection established successfully.\n");
+                    continue;
+                }*/
                 sdsfree(pending);
                 pending = 0;
                 goto close;

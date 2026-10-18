@@ -3,7 +3,7 @@
 
 #include <resp_parser.h>
 #include <data_types/hash_table.h>
-#include <util.h>
+#include <server.h>
 
 typedef struct {
     sds out;
@@ -15,7 +15,7 @@ typedef struct {
     sds out;
 } client_ctx;
 
-typedef void (command_fun)(resp_object *args, hash_table *db, sds *out);
+typedef void (command_fun)(resp_value *args, redis_db *db, sds *out);
 
 #define CMD_NOAUTH (1 << 0)
 #define CMD_WRITE (1 << 1)
@@ -41,7 +41,7 @@ typedef struct {
 
 void set_required_password(const char *password);
 int auth_required(void);
-void execute(resp_object *args, hash_table *db, sds *out);
-const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, sds *out);
+void execute(resp_value *args, redis_db *db, sds *out);
+const command* execute_command(resp_value *args, redis_db *db, client_ctx *client, sds *out);
 
 #endif //REDIS_CLONE_COMMAND_HANDLER_H

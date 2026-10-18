@@ -9,8 +9,8 @@
 #include <data_types/set.h>
 #include <data_types/sorted_set.h>
 #include <data_types/quick_list.h>
-#include <aof_handler.h>
 #include <util.h>
+#include <server.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #define strcasecmp _stricmp
@@ -20,12 +20,12 @@
 
 static sds required_password = NULL;
 
-static void append_bulk(sds *out, const redis_object *redis_obj) {
+static void append_bulk(sds *out, const robj *redis_obj) {
     if (redis_obj == NULL || redis_obj->type != OBJ_STRING) {
         append_fmt(out, "$-1\r\n");
         return;
     }
-    append_b(out, (sds) redis_obj->ptr);
+    append_b(out, redis_obj->ptr);
 }
 
 static void err_wrong_args(sds *out, const char *cmd_name) {
@@ -45,20 +45,20 @@ static int parse_double(sds s, double *out) {
     return 1;
 }
 
-static redis_object *lookup_typed(hash_table *db, sds key, redis_type type, int create_if_missing,
+static robj *lookup_typed(redis_db *db, sds key, robj_type type, int create_if_missing,
                                   const char *missing_reply, sds *out) {
-    redis_object *result = lookup_redis_object(db, key);
+    robj *result = db_lookup(db, key);
     if (result == NULL) {
         if (!create_if_missing) {
            append_fmt(out, "%s", missing_reply);
             return NULL;
         }
-        result = create_redis_object(type, NULL, -1);
+        result = create_robj(type, NULL, -1);
         if (result == NULL) {
             append_fmt(out, "-ERR out of memory\r\n");
             return NULL;
         }
-        ht_put(db, key, result);
+        db_put(db, key, result);
         return result;
     }
     if (result->type != type) {
@@ -100,7 +100,7 @@ static void lrange_append(struct zlentry *entry, void *user_data) {
     append_fmt(&ctx->out, "$%u\r\n%.*s\r\n", entry->currlen, entry->currlen, entry->data);
 }
 
-static void ping_command(resp_object *args, hash_table *db, sds *out) {
+static void ping_command(resp_value *args, redis_db *db, sds *out) {
     (void) db;
     if (args->array.len >= 2) {
         sds msg = get_bulk_at(args, 1);
@@ -110,41 +110,42 @@ static void ping_command(resp_object *args, hash_table *db, sds *out) {
     }
 }
 
-static void echo_command(resp_object *args, hash_table *db, sds *out) {
+static void echo_command(resp_value *args, redis_db *db, sds *out) {
     (void) db;
     sds msg = get_bulk_at(args, 1);
     append_fmt(out, "$%u\r\n%s\r\n", sdslen(msg), msg);
 }
 
-static void exists_command(resp_object *args, hash_table *db, sds *out) {
+static void exists_command(resp_value *args, redis_db *db, sds *out) {
     int count = 0;
     for (int i = 1; i < args->array.len; i++) {
-        if (lookup_redis_object(db, get_bulk_at(args, i)) != NULL) count++;
+        if (db_lookup(db, get_bulk_at(args, i)) != NULL) count++;
     }
     append_fmt(out, ":%d\r\n", count);
 }
 
-static void del_command(resp_object *args, hash_table *db, sds *out) {
+static void del_command(resp_value *args, redis_db *db, sds *out) {
     int deleted = 0;
     for (int i = 1; i < args->array.len; i++) {
-        deleted += ht_delete(db, get_bulk_at(args, i));
+        deleted += db_del(db, get_bulk_at(args, i));
     }
     append_fmt(out, ":%d\r\n", deleted);
 }
 
-static void expire_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, 1));
-    if (redis_obj == NULL) {
+static void expire_command(resp_value *args, redis_db *db, sds *out) {
+    sds key = get_bulk_at(args, 1);
+    if (db_lookup(db, key) == NULL) {
         append_fmt(out, ":0\r\n");
         return;
     }
     long long sec = strtoll(get_bulk_at(args, 2), NULL, 10);
-    redis_obj->expires_at = current_time_ms() + sec * 1000;
+    db_set_expire(db, key, current_time_ms() + sec * 1000);
+
     append_fmt(out, ":1\r\n");
 }
 
-static void ttl_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, 1));
+static void ttl_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = db_lookup(db, get_bulk_at(args, 1));
     if (redis_obj == NULL) {
         append_fmt(out, ":-2\r\n");
         return;
@@ -157,18 +158,19 @@ static void ttl_command(resp_object *args, hash_table *db, sds *out) {
     append_fmt(out, ":%lld\r\n", ttl);
 }
 
-static void pexpireat_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, 1));
-    if (redis_obj == NULL) {
+static void pexpireat_command(resp_value *args, redis_db *db, sds *out) {
+    sds key = get_bulk_at(args, 1);
+    if (db_lookup(db, key) == NULL) {
         append_fmt(out, ":0\r\n");
         return;
     }
     long long timestamp = strtoll(get_bulk_at(args, 2), NULL, 10);
-    redis_obj->expires_at = timestamp;
+    db_set_expire(db, key, timestamp);
+
     append_fmt(out, ":1\r\n");
 }
 
-static int parse_set_options(resp_object *args, sds *out, long long *ttl, int *flags) {
+static int parse_set_options(resp_value *args, sds *out, long long *ttl, int *flags) {
     *flags = 0;
     long long expire_ms = -1;
 
@@ -209,7 +211,7 @@ static int parse_set_options(resp_object *args, sds *out, long long *ttl, int *f
         return 0;
 }
 
-static void set_command(resp_object *args, hash_table *db, sds *out) {
+static void set_command(resp_value *args, redis_db *db, sds *out) {
     long long ttl;
     int flags;
     if (!parse_set_options(args, out, &ttl, &flags)) return;
@@ -217,7 +219,7 @@ static void set_command(resp_object *args, hash_table *db, sds *out) {
     sds key = get_bulk_at(args, 1);
     sds value = get_bulk_at(args, 2);
 
-    redis_object *existing = lookup_redis_object(db, key);
+    robj *existing = db_lookup(db, key);
     sds old_value = (existing != NULL) ? sdsdup(existing->ptr) : NULL;
 
     int write = 1;
@@ -226,8 +228,8 @@ static void set_command(resp_object *args, hash_table *db, sds *out) {
 
     if (write) {
         if ((flags & SET_KEEPTTL) && existing != NULL) ttl = existing->expires_at;
-        redis_object *redis_obj = create_redis_object(OBJ_STRING, value, ttl);
-        ht_put(db, key, redis_obj);
+        robj *redis_obj = create_robj(OBJ_STRING, value, ttl);
+        db_put(db, key, redis_obj);
     }
 
     if (flags & SET_GET) {
@@ -239,7 +241,7 @@ static void set_command(resp_object *args, hash_table *db, sds *out) {
     sdsfree(old_value);
 }
 
-static void mset_command(resp_object *args, hash_table *db, sds *out) {
+static void mset_command(resp_value *args, redis_db *db, sds *out) {
     int argc = args->array.len;
     if (argc % 2 == 0) {
         err_wrong_args(out, "mset");
@@ -247,28 +249,28 @@ static void mset_command(resp_object *args, hash_table *db, sds *out) {
     }
 
     for (int i = 1; i < argc; i += 2) {
-        redis_object *redis_obj = create_redis_object(OBJ_STRING, get_bulk_at(args, i + 1), -1);
-        ht_put(db, get_bulk_at(args, i), redis_obj);
+        robj *redis_obj = create_robj(OBJ_STRING, get_bulk_at(args, i + 1), -1);
+        db_put(db, get_bulk_at(args, i), redis_obj);
     }
     append_fmt(out, "+OK\r\n");
 }
 
-static void get_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_STRING, 0, "$-1\r\n", out);
+static void get_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_STRING, 0, "$-1\r\n", out);
     if (redis_obj == NULL) return;
     append_bulk(out, redis_obj);
 }
 
-static void mget_command(resp_object *args, hash_table *db, sds *out) {
+static void mget_command(resp_value *args, redis_db *db, sds *out) {
     append_fmt(out, "*%d\r\n", args->array.len - 1);
     for (int i = 1; i < args->array.len; i++) {
-        redis_object *redis_obj = lookup_redis_object(db, get_bulk_at(args, i));
+        robj *redis_obj = db_lookup(db, get_bulk_at(args, i));
         append_bulk(out, redis_obj);
     }
 }
 
-static void incr_decr(hash_table *db, sds key, long long delta, sds *out) {
-    redis_object *redis_obj = lookup_redis_object(db, key);
+static void incr_decr(redis_db *db, sds key, long long delta, sds *out) {
+    robj *redis_obj = db_lookup(db, key);
     if (redis_obj != NULL && redis_obj->type != OBJ_STRING) {
         append_fmt(out, "-WRONGTYPE value is not a string\r\n");
         return;
@@ -291,9 +293,9 @@ static void incr_decr(hash_table *db, sds key, long long delta, sds *out) {
 
     if (redis_obj == NULL) {
         sds value = sdsnew(buf);
-        redis_obj = create_redis_object(OBJ_STRING, value, -1);
+        redis_obj = create_robj(OBJ_STRING, value, -1);
         sdsfree(value);
-        ht_put(db, key, redis_obj);
+        db_put(db, key, redis_obj);
     } else {
         sdsfree(redis_obj->ptr);
         redis_obj->ptr = sdsnew(buf);
@@ -302,27 +304,27 @@ static void incr_decr(hash_table *db, sds key, long long delta, sds *out) {
     append_fmt(out, ":%lld\r\n", new_value);
 }
 
-static void incr_command(resp_object *args, hash_table *db, sds *out) {
+static void incr_command(resp_value *args, redis_db *db, sds *out) {
     incr_decr(db, get_bulk_at(args, 1), 1, out);
 }
 
-static void decr_command(resp_object *args, hash_table *db, sds *out) {
+static void decr_command(resp_value *args, redis_db *db, sds *out) {
     incr_decr(db, get_bulk_at(args, 1), -1, out);
 }
 
-static void incrby_command(resp_object *args, hash_table *db, sds *out) {
+static void incrby_command(resp_value *args, redis_db *db, sds *out) {
     long long delta = strtoll(get_bulk_at(args, 2), NULL, 10);
     incr_decr(db, get_bulk_at(args, 1), delta, out);
 }
 
-static void append_command(resp_object *args, hash_table *db, sds *out) {
+static void append_command(resp_value *args, redis_db *db, sds *out) {
     sds key = get_bulk_at(args, 1);
     sds value = get_bulk_at(args, 2);
 
-    redis_object *redis_obj = lookup_redis_object(db, key);
+    robj *redis_obj = db_lookup(db, key);
     if (redis_obj == NULL) {
-        redis_obj = create_redis_object(OBJ_STRING, value, -1);
-        ht_put(db, key, redis_obj);
+        redis_obj = create_robj(OBJ_STRING, value, -1);
+        db_put(db, key, redis_obj);
         append_fmt(out, ":%u\r\n", sdslen((sds) redis_obj->ptr));
         return;
     }
@@ -339,14 +341,14 @@ static void append_command(resp_object *args, hash_table *db, sds *out) {
     append_fmt(out, ":%u\r\n", sdslen(new_value));
 }
 
-static void hset_command(resp_object *args, hash_table *db, sds *out) {
+static void hset_command(resp_value *args, redis_db *db, sds *out) {
     int argc = args->array.len;
     if (argc % 2 != 0) {
         err_wrong_args(out, "hset");
         return;
     }
 
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 1, NULL, out);
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 1, NULL, out);
     if (redis_obj == NULL) return;
 
     hash_table *hash = redis_obj->ptr;
@@ -358,16 +360,16 @@ static void hset_command(resp_object *args, hash_table *db, sds *out) {
     append_fmt(out, ":%d\r\n", added);
 }
 
-static void hget_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, "$-1\r\n", out);
+static void hget_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, "$-1\r\n", out);
     if (redis_obj == NULL) return;
 
     sds field_value = ht_get(redis_obj->ptr, get_bulk_at(args, 2));
     append_b(out, field_value);
 }
 
-static void hgetall_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, "*0\r\n", out);
+static void hgetall_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_HASH, 0, "*0\r\n", out);
     if (redis_obj == NULL) return;
 
     hash_table *hash = redis_obj->ptr;
@@ -377,9 +379,9 @@ static void hgetall_command(resp_object *args, hash_table *db, sds *out) {
     *out = ctx.out;
 }
 
-static void hdel_command(resp_object *args, hash_table *db, sds *out) {
+static void hdel_command(resp_value *args, redis_db *db, sds *out) {
     sds key = get_bulk_at(args, 1);
-    redis_object *redis_obj = lookup_typed(db, key, OBJ_HASH, 0, ":0\r\n", out);
+    robj *redis_obj = lookup_typed(db, key, OBJ_HASH, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     hash_table *hash = redis_obj->ptr;
@@ -388,11 +390,13 @@ static void hdel_command(resp_object *args, hash_table *db, sds *out) {
         if (ht_delete(hash, get_bulk_at(args, i))) del++;
     }
     append_fmt(out, ":%d\r\n", del);
-    if (hash->size == 0) ht_delete(db, key);
+    if (hash->size == 0) {
+        db_del(db, key);
+    }
 }
 
-static void sadd_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 1, NULL, out);
+static void sadd_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 1, NULL, out);
     if (redis_obj == NULL) return;
 
     set *s = redis_obj->ptr;
@@ -403,9 +407,9 @@ static void sadd_command(resp_object *args, hash_table *db, sds *out) {
     append_fmt(out, ":%d\r\n", count);
 }
 
-static void srem_command(resp_object *args, hash_table *db, sds *out) {
+static void srem_command(resp_value *args, redis_db *db, sds *out) {
     sds key = get_bulk_at(args, 1);
-    redis_object *redis_obj = lookup_typed(db, key, OBJ_SET, 0, ":0\r\n", out);
+    robj *redis_obj = lookup_typed(db, key, OBJ_SET, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     set *s = redis_obj->ptr;
@@ -415,19 +419,21 @@ static void srem_command(resp_object *args, hash_table *db, sds *out) {
     }
     append_fmt(out, ":%d\r\n", del);
 
-    if (s->size == 0) ht_delete(db, key);
+    if (s->size == 0)  {
+        db_del(db, key);
+    }
 }
 
-static void sismember_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, ":0\r\n", out);
+static void sismember_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     int is_member = set_contains(redis_obj->ptr, get_bulk_at(args, 2));
     append_fmt(out, ":%d\r\n", is_member);
 }
 
-static void smembers_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, "*0\r\n", out);
+static void smembers_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_SET, 0, "*0\r\n", out);
     if (redis_obj == NULL) return;
 
     set *s = redis_obj->ptr;
@@ -445,7 +451,7 @@ static void smembers_command(resp_object *args, hash_table *db, sds *out) {
     - INCR — increment the member's score instead of setting it (like ZINCRBY);
       only works with a single score/member pair
 */
-static void zadd_command(resp_object *args, hash_table *db, sds *out) {
+static void zadd_command(resp_value *args, redis_db *db, sds *out) {
     int argc = args->array.len;
     if (argc % 2 != 0) {
         err_wrong_args(out, "zadd");
@@ -460,7 +466,7 @@ static void zadd_command(resp_object *args, hash_table *db, sds *out) {
         }
     }
 
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 1, NULL, out);
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 1, NULL, out);
     if (redis_obj == NULL) return;
 
     zset *zs = redis_obj->ptr;
@@ -473,9 +479,9 @@ static void zadd_command(resp_object *args, hash_table *db, sds *out) {
     append_fmt(out, ":%d\r\n", count);
 }
 
-static void zrem_command(resp_object *args, hash_table *db, sds *out) {
+static void zrem_command(resp_value *args, redis_db *db, sds *out) {
     sds key = get_bulk_at(args, 1);
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, ":0\r\n", out);
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     zset *zs = redis_obj->ptr;
@@ -485,22 +491,22 @@ static void zrem_command(resp_object *args, hash_table *db, sds *out) {
     }
     append_fmt(out, ":%d\r\n", count);
 
-    if (zs->size == 0) {
-        ht_delete(db, key);
+    if (zs->size == 0)  {
+        db_del(db, key);
     }
 }
 
-static void zcount_command(resp_object *args, hash_table *db, sds *out) {
+static void zcount_command(resp_value *args, redis_db *db, sds *out) {
     sds key = get_bulk_at(args, 1);
-    redis_object *redis_obj = lookup_typed(db, key, OBJ_ZSET, 0, ":0\r\n", out);
+    robj *redis_obj = lookup_typed(db, key, OBJ_ZSET, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     zset *zs = redis_obj->ptr;
     append_fmt(out, ":%d\r\n", zs->size);
 }
 
-static void zrangebyscore_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, "*0\r\n", out);
+static void zrangebyscore_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, "*0\r\n", out);
     if (redis_obj == NULL) return;
 
     double min, max;
@@ -518,8 +524,8 @@ static void zrangebyscore_command(resp_object *args, hash_table *db, sds *out) {
     *out = ctx.out;
 }
 
-static void zscore_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, "$-1\r\n", out);
+static void zscore_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_ZSET, 0, "$-1\r\n", out);
     if (redis_obj == NULL) return;
 
     double score;
@@ -532,9 +538,9 @@ static void zscore_command(resp_object *args, hash_table *db, sds *out) {
     append_fmt(out, "$%d\r\n%s\r\n", len, buf);
 }
 
-static void list_push(resp_object *args, hash_table *db, sds *out,
+static void list_push(resp_value *args, redis_db *db, sds *out,
                       quicklist_push_fn fn, int create_if_missing) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, create_if_missing,
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, create_if_missing,
                                            "-The list doesnt exist\r\n", out);
     if (redis_obj == NULL) return;
 
@@ -546,9 +552,9 @@ static void list_push(resp_object *args, hash_table *db, sds *out,
     append_fmt(out, ":%d\r\n", count);
 }
 
-static void list_pop(resp_object *args, hash_table *db, sds *out, quicklist_pop_fn fn) {
+static void list_pop(resp_value *args, redis_db *db, sds *out, quicklist_pop_fn fn) {
     sds key = get_bulk_at(args, 1);
-    redis_object *redis_obj = lookup_typed(db, key, OBJ_LIST, 0, ":0\r\n", out);
+    robj *redis_obj = lookup_typed(db, key, OBJ_LIST, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     quicklist *ql = redis_obj->ptr;
@@ -560,35 +566,37 @@ static void list_pop(resp_object *args, hash_table *db, sds *out, quicklist_pop_
     }
     append_fmt(out, ":%d\r\n", deleted);
 
-    if (ql->count == 0) ht_delete(db, key);
+    if (ql->count == 0)  {
+        db_del(db, key);
+    }
 }
 
-static void lpush_command(resp_object *args, hash_table *db, sds *out) {
+static void lpush_command(resp_value *args, redis_db *db, sds *out) {
     list_push(args, db, out, quicklist_push_head, 1);
 }
 
-static void rpush_command(resp_object *args, hash_table *db, sds *out) {
+static void rpush_command(resp_value *args, redis_db *db, sds *out) {
     list_push(args, db, out, quicklist_push_tail, 1);
 }
 
-static void lpushx_command(resp_object *args, hash_table *db, sds *out) {
+static void lpushx_command(resp_value *args, redis_db *db, sds *out) {
     list_push(args, db, out, quicklist_push_head, 0);
 }
 
-static void rpushx_command(resp_object *args, hash_table *db, sds *out) {
+static void rpushx_command(resp_value *args, redis_db *db, sds *out) {
     list_push(args, db, out, quicklist_push_tail, 0);
 }
 
-static void lpop_command(resp_object *args, hash_table *db, sds *out) {
+static void lpop_command(resp_value *args, redis_db *db, sds *out) {
     list_pop(args, db, out, quicklist_pop_head);
 }
 
-static void rpop_command(resp_object *args, hash_table *db, sds *out) {
+static void rpop_command(resp_value *args, redis_db *db, sds *out) {
     list_pop(args, db, out, quicklist_pop_tail);
 }
 
-static void linsert_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", out);
+static void linsert_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     quicklist *ql = redis_obj->ptr;
@@ -603,16 +611,16 @@ static void linsert_command(resp_object *args, hash_table *db, sds *out) {
     }
 }
 
-static void llen_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", out);
+static void llen_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     append_fmt(out, ":%lu\r\n", ((quicklist *) redis_obj->ptr)->count);
 }
 
-static void lrem_command(resp_object *args, hash_table *db, sds *out) {
+static void lrem_command(resp_value *args, redis_db *db, sds *out) {
     sds key = get_bulk_at(args, 1);
-    redis_object *redis_obj = lookup_typed(db, key, OBJ_LIST, 0, ":0\r\n", out);
+    robj *redis_obj = lookup_typed(db, key, OBJ_LIST, 0, ":0\r\n", out);
     if (redis_obj == NULL) return;
 
     sds value = get_bulk_at(args, 2);
@@ -621,11 +629,13 @@ static void lrem_command(resp_object *args, hash_table *db, sds *out) {
     int del = quicklist_remove(ql, value, count);
     append_fmt(out, ":%d\r\n", del);
 
-    if (ql->count == 0) ht_delete(db, key);
+    if (ql->count == 0)  {
+        db_del(db, key);
+    }
 }
 
-static void lrange_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, "*0\r\n", out);
+static void lrange_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, "*0\r\n", out);
     if (redis_obj == NULL) return;
 
     int start = (int) strtoll(get_bulk_at(args, 2), NULL, 10);
@@ -640,8 +650,8 @@ static void lrange_command(resp_object *args, hash_table *db, sds *out) {
     *out = ctx.out;
 }
 
-static void lindex_command(resp_object *args, hash_table *db, sds *out) {
-    redis_object *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, "$-1\r\n", out);
+static void lindex_command(resp_value *args, redis_db *db, sds *out) {
+    robj *redis_obj = lookup_typed(db, get_bulk_at(args, 1), OBJ_LIST, 0, "$-1\r\n", out);
     if (redis_obj == NULL) return;
 
     int index = (int) strtoll(get_bulk_at(args, 2), NULL, 10);
@@ -714,9 +724,9 @@ static const command *lookup_command(sds name) {
     return NULL;
 }
 
-static int validate_cmd_args(const resp_object *resp_obj) {
+static int validate_cmd_args(const resp_value *resp_obj) {
     for (int i = 0; i < resp_obj->array.len; i++) {
-        const resp_object *arg = resp_obj->array.ptr[i];
+        const resp_value *arg = resp_obj->array.ptr[i];
         if (arg == NULL || arg->type != RESP_BULK || arg->bulk == NULL) return 0;
     }
     return 1;
@@ -738,7 +748,7 @@ static int secure_eq(sds a, sds b) {
     return diff == 0;
 }
 
-static void auth_command(resp_object *args, client_ctx *client, sds *out) {
+static void auth_command(resp_value *args, client_ctx *client, sds *out) {
     int argc = args->array.len;
     if (argc != 2 && argc != 3) {
         err_wrong_args(out, "auth");
@@ -761,13 +771,13 @@ static void auth_command(resp_object *args, client_ctx *client, sds *out) {
     }
 }
 
-void execute(resp_object *args, hash_table *db, sds *out) {
+void execute(resp_value *args, redis_db *db, sds *out) {
     const command *cmd = lookup_command(get_bulk_at(args, 0));
     if (cmd == NULL) return;
     cmd->fun(args, db, out);
 }
 
-const command* execute_command(resp_object *args, hash_table *db, client_ctx *client, sds *out) {
+const command* execute_command(resp_value *args, redis_db *db, client_ctx *client, sds *out) {
     if (args->type != RESP_ARRAY || args->array.len == 0) return NULL;
     if (!validate_cmd_args(args)) {
         append_fmt(out, "-ERR Protocol error: expected bulk string arguments\r\n");

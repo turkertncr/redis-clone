@@ -5,6 +5,15 @@
 #include <queue.h>
 #include <config.h>
 
+#include "server.h"
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <io.h>
+#define fsync _commit
+#else
+#include <unistd.h>
+#endif
+
 typedef enum {
     ALWAYS,
     EVERYSEC,
@@ -19,6 +28,6 @@ typedef struct aof_handler {
 } aof_handler;
 
 void* aof_write(void* args);
-int aof_handler_init(aof_handler *handler, config *cfg, hash_table *db);
+int aof_handler_init(aof_handler *handler, config *cfg, redis_db *db);
 
 #endif //REDIS_CLONE_ASYNC_H

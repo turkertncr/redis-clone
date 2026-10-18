@@ -4,13 +4,14 @@
 #include <repl.h>
 #include <command_handler.h>
 #include <resp_parser.h>
+#include <util.h>
 
-static hash_table *ht;
+static redis_db *db;
 
 static void execute_inline(char *args[], size_t args_size) {
     sds resp = build_resp(args, args_size);
 
-    resp_object *resp_obj = NULL;
+    resp_value *resp_obj = NULL;
     resp_status status = parse_resp(resp, resp + sdslen(resp), &resp_obj, NULL);
     if (status != RESP_OK) {
         printf("invalid command\n");
@@ -20,7 +21,7 @@ static void execute_inline(char *args[], size_t args_size) {
 
     client_ctx local = {1};
     sds out = sdsempty();
-    execute_command(resp_obj, ht, &local, &out);
+    execute_command(resp_obj, db, &local, &out);
     fwrite(out, 1, sdslen(out), stdout);
     putchar('\n');
 
@@ -29,8 +30,8 @@ static void execute_inline(char *args[], size_t args_size) {
     free_respobj(resp_obj);
 }
 
-void repl_init(hash_table *table) {
-    ht = table;
+void repl_init(redis_db *redis_db) {
+    db = redis_db;
 }
 
 void execute_with_str(char *args) {

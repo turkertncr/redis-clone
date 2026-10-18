@@ -8,6 +8,8 @@
 #include <redis_object.h>
 #include <resp_parser.h>
 
+#include "util.h"
+
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0600
@@ -38,18 +40,6 @@
 
 #include <server.h>
 #include <command_handler.h>
-#include <repl.h>
-
-static void print_status(const resp_status *status) {
-    DBG("status: ");
-    switch (*status) {
-        case RESP_OK: DBG("OK"); break;
-        case RESP_INCOMPLETE: DBG("INCOMPLETE"); break;
-        case RESP_ERR: DBG("ERROR"); break;
-        default: DBG("UNKNOWN"); break;
-    }
-    DBG("\n");
-}
 
 static void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
     sdsfree(clients[i].out);
@@ -61,7 +51,7 @@ static void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int 
     (*nfds)--;
 }
 
-static void parse_inline(sds inline_command, resp_object **args_out, resp_status *status, sds *next) {
+static void parse_inline(sds inline_command, sds *resp_out, resp_value **args_out, resp_status *status, sds *next) {
     size_t len = sdslen(inline_command);
     char *nl = memchr(inline_command, '\n', len);
     if (nl == NULL) {
@@ -77,19 +67,19 @@ static void parse_inline(sds inline_command, resp_object **args_out, resp_status
     sds resp = build_resp(splitted.args, splitted.len);
     sds discard = NULL;
     *status = parse_resp(resp, resp + sdslen(resp), args_out, &discard);
-    sdsfree(resp);
     sdsfree(line);
     zfree(splitted.args);
 
+    *resp_out = resp;
     *next = nl + 1;
 }
 
-static int is_inline(const sds in) {
+static int is_resp(const sds in) {
     return in[0] == '*' || in[0] == '$';
 }
 
-static void propagate_ttl_correction(queue *q, hash_table *ht, sds key) {
-    redis_object *obj = lookup_redis_object(ht, key);
+static void propagate_ttl_correction(queue *q, redis_db *db, sds key) {
+    robj *obj = db_lookup(db, key);
     if (obj == NULL || obj->expires_at == -1) return;
 
     sds aof_pexpire = sdsempty();
@@ -99,10 +89,41 @@ static void propagate_ttl_correction(queue *q, hash_table *ht, sds key) {
     queue_push(q, aof_pexpire);
 }
 
-int init_socket(hash_table *ht, queue *q)
-{
-    if (!ht) return 1;
+static void do_expire_cycle(redis_db *db, queue *q, int limit) {
+    long long start = current_time_ms();
 
+    for (int i = 0; i < 20; i++) {
+        long long now = current_time_ms();
+        if (now - start >= limit) return;
+
+        unsigned int idx = ((unsigned int) rand() << 15 | (unsigned int) rand()) % (unsigned int) db->expires->capacity;
+        ht_node *entry = db->expires->table[idx];
+        if (entry == NULL) continue;
+
+        int n = node_depth(entry);
+        int steps = rand() % n;
+        entry = walk_node(entry, steps);
+
+        robj *obj = entry->value;
+        sds key = entry->key;
+
+        if (obj->expires_at <= now) {
+            sds del = sdsnewlen("*2\r\n$3\r\nDEL\r\n", 13);
+            append_b(&del, key);
+
+            fprintf(stderr, "cleared key: %s\n", key);
+            db_del(db, key);
+            if (q) queue_push(q, del);
+            else sdsfree(del);
+        }
+    }
+}
+
+int init_socket(redis_db *db, queue *q)
+{
+    if (!db) return 1;
+
+    srand(time(NULL));
     SOCKET server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
     struct pollfd fds[MAX_CONNECTIONS + 1];
@@ -163,8 +184,9 @@ int init_socket(hash_table *ht, queue *q)
     fds[0].fd = server_socket;
     fds[0].events = POLLIN;
 
+    long long last_cycle = current_time_ms();
     while (1) {
-        int poll_result = poll(fds, nfds, -1);
+        int poll_result = poll(fds, nfds, 100);
         if (poll_result < 0) break;
 
         if (fds[0].revents & POLLIN) {
@@ -238,7 +260,7 @@ int init_socket(hash_table *ht, queue *q)
                 } else {
                     buff[read_bytes] = '\0';
 
-                    resp_object *args = NULL;
+                    resp_value *args = NULL;
                     resp_status status;
 
                     if (client->pending == NULL) client->pending = sdsnewlen(buff, read_bytes);
@@ -246,16 +268,16 @@ int init_socket(hash_table *ht, queue *q)
 
                 main:
                     sds next = NULL;
+                    sds inline_out = 0;
                     if (sdslen(client->pending) == 0) continue;
-                    if (!is_inline(client->pending)) {
-                        parse_inline(client->pending, &args, &status, &next);
+                    if (!is_resp(client->pending)) {
+                        parse_inline(client->pending, &inline_out, &args, &status, &next);
                     } else {
                         status = parse_resp(client->pending, client->pending + sdslen(client->pending), &args, &next);
                     }
 
-                    if (status == ERROR) {
+                    if (status == RESP_ERR) {
                         fprintf(stderr, "PARSE ERROR on: %.*s\n", (int) sdslen(client->pending), client->pending);
-                        sdsfree(client->pending);
                         drop_client(fds, clients, &nfds, i--);
                         continue;
                     }
@@ -266,13 +288,15 @@ int init_socket(hash_table *ht, queue *q)
                         sds out = sdsempty();
                         size_t offset = next - client->pending;
 
-                        const command *cmd = execute_command(args, ht, &clients[i], &out);
+                        const command *cmd = execute_command(args, db, &clients[i], &out);
                         if (cmd && (cmd->flags & CMD_WRITE) && out[0] != '-' && q) {
                             if (!(cmd->flags & CMD_TTL)) {
-                                queue_push(q, sdsnewlen(client->pending, offset));
+                                sds data = inline_out != 0 ? inline_out : sdsnewlen(client->pending, offset);
+                                queue_push(q, data);
+                                inline_out = 0;
                             }
                             if (cmd->flags & (CMD_TTL | CMD_SET_TTL)) {
-                                propagate_ttl_correction(q, ht, get_bulk_at(args, 1));
+                                propagate_ttl_correction(q, db, get_bulk_at(args, 1));
                             }
                         }
 
@@ -289,6 +313,7 @@ int init_socket(hash_table *ht, queue *q)
                                 } else {
                                     sdsfree(out);
                                     free_respobj(args);
+                                    if (inline_out) sdsfree(inline_out);
                                     drop_client(fds, clients, &nfds, i--);
                                     continue;
                                 }
@@ -301,6 +326,7 @@ int init_socket(hash_table *ht, queue *q)
 
                         sdsfree(out);
                         free_respobj(args);
+                        if (inline_out) sdsfree(inline_out);
 
                         if (next != NULL) {
                             size_t new_len = sdslen(client->pending) - offset;
@@ -314,6 +340,11 @@ int init_socket(hash_table *ht, queue *q)
                     }
                 }
             }
+        }
+        long long now = current_time_ms();
+        if (now - last_cycle >= 100) {
+            do_expire_cycle(db, q, 25);
+            last_cycle = now;
         }
     }
 

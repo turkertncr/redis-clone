@@ -7,12 +7,13 @@
 #include <string.h>
 #include <command_handler.h>
 #include <resp_parser.h>
+#include <server.h>
 
-void aof_read(aof_handler *handler, hash_table *db) {
+void aof_read(aof_handler *handler, redis_db *db) {
     sds buffer = sdsempty();
     char chunk[1024];
 
-    resp_object *args = 0;
+    resp_value *args = 0;
     size_t offset = 0;
     size_t read_bytes;
     while ((read_bytes = fread(chunk, 1, sizeof(chunk), handler->file)) > 0) {
@@ -40,29 +41,31 @@ void* aof_write(void *args) {
     long long last = current_time_ms();
 
     queue *q = &handler->queue;
-    sds data = queue_pop(q);
-    while (data != NULL) {
-        fprintf(handler->file, "%s", data);
+    sds data;
+    int dirty = 0;
+    while (1) {
+        queue_status status = queue_pop(q, &data);
         aofsync sync = handler->aofsync;
-        if (sync != NO) {
-            if (sync == EVERYSEC) {
-                long long now = current_time_ms();
-                if (now - last >= 1000) {
-                    fflush(handler->file);
-                    last = now;
-                }
-            } else {
-                fflush(handler->file);
-            }
-        }
-        sdsfree(data);
-        data = queue_pop(q);
-    }
+        long long now = current_time_ms();
 
+        if (status == OK) {
+            dirty = 1;
+            fprintf(handler->file, "%s", data);
+            fflush(handler->file);
+            if (sync == ALWAYS) fsync(fileno(handler->file));
+        }
+        else if (status == SHUTDOWN) break;
+
+        if (sync == EVERYSEC && dirty && now - last >= 1000) {
+            fsync(fileno(handler->file));
+            last = now;
+            dirty = 0;
+        }
+    }
     return 0;
 }
 
-int aof_handler_init(aof_handler *handler, config *cfg, hash_table *db) {
+int aof_handler_init(aof_handler *handler, config *cfg, redis_db *db) {
     if (!handler) { return 0; }
 
     sds aof_path = get_config(cfg, "aofpath");
@@ -74,9 +77,13 @@ int aof_handler_init(aof_handler *handler, config *cfg, hash_table *db) {
     aof_read(handler, db);
 
     sds aof_sync = get_config(cfg, "appendfsync");
-    if (strcmp(aof_sync, "always") == 0) { handler->aofsync = ALWAYS; }
-    if (strcmp(aof_sync, "everysec") == 0) { handler->aofsync = EVERYSEC; }
-    if (strcmp(aof_sync, "no") == 0) { handler->aofsync = NO; }
+    if (aof_sync) {
+        if (strcmp(aof_sync, "always") == 0) { handler->aofsync = ALWAYS; }
+        if (strcmp(aof_sync, "everysec") == 0) { handler->aofsync = EVERYSEC; }
+        if (strcmp(aof_sync, "no") == 0) { handler->aofsync = NO; }
+    } else {
+        handler->aofsync = EVERYSEC;
+    }
 
     queue_init(&handler->queue);
     pthread_create(&handler->thread, NULL, aof_write, handler);

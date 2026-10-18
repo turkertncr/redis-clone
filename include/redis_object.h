@@ -2,7 +2,6 @@
 #ifndef REDIS_CLONE_REDIS_OBJECT_H
 #define REDIS_CLONE_REDIS_OBJECT_H
 
-#include <data_types/hash_table.h>
 
 typedef enum {
     OBJ_STRING = 0,
@@ -10,16 +9,15 @@ typedef enum {
     OBJ_SET,
     OBJ_ZSET,
     OBJ_HASH
-} redis_type;
+} robj_type;
 
 typedef struct redis_object {
-    redis_type type;
+    robj_type type;
     void* ptr;
     long long expires_at;
-} redis_object;
+} robj;
 
-redis_object* create_redis_object(redis_type type, void* ptr, long long expires_at);
-redis_object* lookup_redis_object(hash_table* ht, sds key);
-void redis_object_free(redis_object* obj);
+robj* create_robj(robj_type type, void* ptr, long long expires_at);
+void robj_free(robj* obj);
 
 #endif //REDIS_CLONE_REDIS_OBJECT_H

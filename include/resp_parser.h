@@ -29,18 +29,18 @@ typedef struct resp_object {
             struct resp_object **ptr;
         } array;
     };
-} resp_object;
+} resp_value;
 
-void free_respobj(resp_object* args);
-void free_array_items(resp_object** ptr, int len);
-resp_status parse_bulk(sds input, const char* end, resp_object* args, sds* next);
-resp_status parse_string(sds input, resp_object* args, sds* next);
-resp_status parse_error(sds input, resp_object* args, sds* next);
-resp_status parse_int(sds input, resp_object* args, sds* next);
-resp_status parse_array(sds input, const char* end, resp_object* args, sds* next);
-resp_status handle_type(sds input, const char* end, char type, resp_object* args, sds* next);
-void print_respobj(resp_object* args, int depth);
-resp_status parse_resp(sds input, const char* end, resp_object** args_out, sds *next);
-sds get_bulk_at(resp_object* resp_obj, int index);
+void free_respobj(resp_value* args);
+void free_array_items(resp_value** ptr, int len);
+resp_status parse_bulk(sds input, const char* end, resp_value* args, sds* next);
+resp_status parse_string(sds input, resp_value* args, sds* next);
+resp_status parse_error(sds input, resp_value* args, sds* next);
+resp_status parse_int(sds input, resp_value* args, sds* next);
+resp_status parse_array(sds input, const char* end, resp_value* args, sds* next);
+resp_status handle_type(sds input, const char* end, char type, resp_value* args, sds* next);
+void print_respobj(resp_value* args, int depth);
+resp_status parse_resp(sds input, const char* end, resp_value** args_out, sds *next);
+sds get_bulk_at(resp_value* resp_obj, int index);
 
 #endif //REDIS_CLONE_RESP_PARSER_H

@@ -22,6 +22,8 @@ set(COMMON_SOURCES
         src/data_types/set.c
         src/data_types/hash_table.c
         src/data_types/sorted_set.c
+        include/redis_db.h
+        src/redis_db.c
 )
 
 add_library(redis_common STATIC ${COMMON_SOURCES})
