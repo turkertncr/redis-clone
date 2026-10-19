@@ -8,7 +8,7 @@ A Redis server clone written in C, with its own RESP parser, poll-based TCP even
 - Poll-based TCP event loop (`server.c`) that pipelines multiple commands per read and sets `TCP_NODELAY`
 - Built-in interactive client (`client.c`)
 - Data types: strings, hashes, sets, sorted sets (skip list), lists (quick list / zip list)
-- Lazy key expiration via `EXPIRE`/`TTL` (checked on access, no background sweep)
+- Key expiration via `EXPIRE`/`TTL`: lazy (checked on access) plus a sampled background sweep every 100 ms
 - Password authentication via `requirepass` in `redis.conf`
 - Append-only file logging: write commands are queued and flushed to disk by a background thread (see [Known limitations](#known-limitations))
 - Centralized allocator wrapper (`alloc.c`), optionally backed by jemalloc
@@ -110,4 +110,12 @@ The server accepts up to `MAX_CONNECTIONS` concurrent connections (see `server.h
 
 - **AOF is write-only.** Write commands are logged to the AOF file as they happen, but nothing replays that file back on startup, so data doesn't currently survive a restart.
 - **No RDB/snapshotting.** The only persistence is the AOF log described above.
-- **No active expiration.** Expired keys are only cleaned up lazily, on the next access to that key.
+- **Approximate active expiration.** The background sweep checks 20 random slots of the expires table every 100 ms. Unlike Redis it doesn't repeat when many sampled keys are expired, so expired keys that are never accessed can stay in memory for a while.
+
+### Networking
+
+- **No SIGPIPE handling (Linux/WSL).** If a client closes its connection while the server is sending to it, the kernel raises `SIGPIPE`, which by default kills the server. Fix: ignore `SIGPIPE` at startup or pass `MSG_NOSIGNAL` to `send`. Windows is not affected.
+- **`POLLERR` / `POLLHUP` aren't handled.** The event loop only checks `POLLIN` and `POLLOUT`. A socket that reports only an error or hang-up is never dropped, so `poll` returns immediately on every pass and the server spins at 100% CPU.
+- **Unbounded output buffers.** A client that stops reading without closing the connection (e.g. network loss with no FIN/RST) makes the server buffer every reply in memory with no limit. There's no output buffer limit, TCP keepalive, or idle timeout to detect and drop it.
+- **No retry on failed sends (intentional).** A send that fails with anything other than "would block" drops the client and discards its unsent replies, as Redis does. Writes have already been applied and logged to the AOF, so the client must reconnect and check state itself.
+- **Fixed connection limit.** At most `MAX_CONNECTIONS` (16) clients at once. Extra connections are accepted and then closed immediately.
