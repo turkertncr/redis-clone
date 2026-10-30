@@ -37,3 +37,4 @@ appendonly.aof
 /tests
 benchmark.txt
 test.txt
+task.md

@@ -32,6 +32,8 @@ typedef void (command_fun)(resp_value *args, redis_db *db, sds *out);
 #define SET_EXPIRE_MASK (SET_EX | SET_PX | SET_KEEPTTL)
 #define SET_EXISTENCE_MASK (SET_NX | SET_XX)
 
+#define CMD_NAME_MAX 32
+
 typedef struct {
     const char *name;
     int argc;
@@ -43,5 +45,6 @@ void set_required_password(const char *password);
 int auth_required(void);
 void execute(resp_value *args, redis_db *db, sds *out);
 const command* execute_command(resp_value *args, redis_db *db, client_ctx *client, sds *out);
+void command_handler_init();
 
 #endif //REDIS_CLONE_COMMAND_HANDLER_H

@@ -24,5 +24,6 @@ struct sdshdr *sdsgethdr(sds s);
 sds sdscat(sds s1, sds s2);
 sds sdsappend(sds s1, const char *s2);
 sds sdsappendlen(sds s1, const void *s2, size_t len);
+void sdstolower(sds s);
 
 #endif //REDIS_CLONE_REDIS_STRING_H

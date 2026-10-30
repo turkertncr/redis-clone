@@ -1,5 +1,6 @@
 
 #include <stdio.h>
+#include <errno.h>
 #include <alloc.h>
 #include <queue.h>
 #include <util.h>

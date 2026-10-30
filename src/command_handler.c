@@ -714,14 +714,50 @@ static command commands[] = {
 };
 
 static const size_t ncmd = sizeof(commands) / sizeof(commands[0]);
+static hash_table *command_table = NULL;
+
+static void cmd_name_fold(char *dst, const char *src, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        const char c = src[i];
+        dst[i] = (c >= 'A' && c <= 'Z') ? (char) (c - 'A' + 'a') : c;
+    }
+}
+
+static void command_noop_free(void *value) {
+    (void) value;
+}
+
+void command_handler_init() {
+    if (command_table != NULL) return;
+
+    command_table = ht_create(command_noop_free, 0, HT_MEDIUM_CAPACITY * 2);
+    for (size_t i = 0; i < ncmd; i++) {
+        const size_t len = strlen(commands[i].name);
+        if (len == 0 || len >= CMD_NAME_MAX) {
+            fprintf(stderr, "command '%s' does not fit CMD_NAME_MAX\n", commands[i].name);
+            continue;
+        }
+
+        char folded[CMD_NAME_MAX];
+        cmd_name_fold(folded, commands[i].name, len);
+
+        sds tmp = sdsnewlen(folded, len);
+        ht_put(command_table, tmp, &commands[i]);
+        sdsfree(tmp);
+    }
+
+    if ((size_t) command_table->size != ncmd) {
+        fprintf(stderr, "command table: %zu commands declared but %d inserted"" (duplicate name?)\n", ncmd, command_table->size);
+    }
+}
 
 static const command *lookup_command(sds name) {
-    for (size_t i = 0; i < ncmd; i++) {
-        if (strcasecmp(name, commands[i].name) == 0) {
-            return &commands[i];
-        }
-    }
-    return NULL;
+    const size_t len = sdslen(name);
+    if (len == 0 || len >= CMD_NAME_MAX) return NULL;
+
+    char folded[CMD_NAME_MAX];
+    cmd_name_fold(folded, name, len);
+    return ht_get_raw(command_table, folded, len);
 }
 
 static int validate_cmd_args(const resp_value *resp_obj) {
@@ -795,6 +831,7 @@ const command* execute_command(resp_value *args, redis_db *db, client_ctx *clien
         append_fmt(out, "-NOAUTH Authentication required.\r\n");
         return NULL;
     }
+
     if (cmd == NULL) {
         append_fmt(out, "-ERR unknown command '%s'\r\n", name);
         return NULL;

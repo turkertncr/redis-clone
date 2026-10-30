@@ -21,6 +21,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <poll.h>
 #define INVALID_SOCKET (-1)
@@ -226,6 +227,11 @@ int init_socket(redis_db *db, queue *q)
         for (int i = 1; i < nfds; i++) {
             struct pollfd *f = &fds[i];
             client_ctx *client = &clients[i];
+
+            if (f->revents & (POLLHUP | POLLERR | POLLNVAL)) {
+                drop_client(fds, clients, &nfds, i--);
+                continue;
+            }
 
             if (f->revents & POLLOUT) {
                 int client_dropped = 0;

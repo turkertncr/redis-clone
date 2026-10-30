@@ -11,7 +11,7 @@ typedef int SOCKET;
 #include <queue.h>
 
 #define PORT 6379
-#define MAX_CONNECTIONS 16
+#define MAX_CONNECTIONS 50
 
 int init_socket(redis_db *redis_db, queue *q);
 

@@ -76,7 +76,6 @@ int run_client() {
     server_addr.sin_port = htons(PORT);
     inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
 
-    fprintf(stderr, "sa \n");
     if (connect_sock(&sock, &server_addr) != 0) { return 1; }
 
     sds pending = 0;

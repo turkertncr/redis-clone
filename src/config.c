@@ -5,6 +5,7 @@
 #include <config.h>
 #include <data_types/hash_table.h>
 #include <alloc.h>
+#include <stdlib.h>
 
 static char** parse(char *str) {
     size_t len = strlen(str);
@@ -48,11 +49,12 @@ static int read_file(config *cfg, const char *path) {
             ht_put(cfg->options, o[0], o[1]);
         }
     }
+    fclose(f);
     return 1;
 }
 
 int init_config(config *cfg, const char *path) {
-    cfg->options = ht_create((ht_value_free_fn) sdsfree, 0, HT_MEDIUM_CAPACITY);
+    cfg->options = ht_create((ht_value_free_fn) sdsfree, REF_MODE, HT_MEDIUM_CAPACITY);
     return read_file(cfg, path ? path : "redis.conf");
 }
 

@@ -6,11 +6,10 @@
 #include <aof_handler.h>
 #include <command_handler.h>
 
-
-
 int main(int argc, char **argv) {
     redis_db redis_db;
     db_init(&redis_db);
+    command_handler_init();
 
     config cfg;
     const char *cfg_path = argc > 1 ? argv[1] : "redis.conf";
@@ -31,5 +30,6 @@ int main(int argc, char **argv) {
     }
     int enabled = sdscmp(get_config(&cfg, "appendonly"), sdsnew("yes")) == 0;
     if (enabled) return init_socket(&redis_db, &aof_handler.queue);
+
     return init_socket(&redis_db, NULL);
 }

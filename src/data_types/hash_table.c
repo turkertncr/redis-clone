@@ -43,19 +43,24 @@ ht_node* ht_node_create(sds key, void *value, int ref) {
     return new_node;
 }
 
-ht_node* ht_node_get(hash_table *ht, sds key) {
+ht_node* ht_node_get_raw(hash_table *ht, const char *key, size_t key_len) {
     if (ht == NULL || ht->size == 0) return NULL;
 
-    unsigned long idx = ht_hash(key) % ht->capacity;
+    unsigned long idx = ht_hash_raw(key, key_len) % ht->capacity;
     ht_node *current = ht->table[idx];
 
     while (current != NULL) {
-        if (sdscmp(current->key, key) == 0) {
+        if (sdslen(current->key) == key_len &&
+            memcmp(current->key, key, key_len) == 0) {
             return current;
         }
         current = current->next;
     }
     return NULL;
+}
+
+ht_node* ht_node_get(hash_table *ht, sds key) {
+    return ht_node_get_raw(ht, key, sdslen(key));
 }
 
 int ht_delete(hash_table *ht, sds key){
@@ -108,6 +113,14 @@ ht_node* walk_node(ht_node *node, int steps) {
 
 void* ht_get(hash_table *ht, sds key) {
     ht_node *node = ht_node_get(ht, key);
+    if (node != NULL) {
+        return node->value;
+    }
+    return NULL;
+}
+
+void* ht_get_raw(hash_table *ht, const char *key, size_t key_len) {
+    ht_node *node = ht_node_get_raw(ht, key, key_len);
     if (node != NULL) {
         return node->value;
     }
@@ -198,16 +211,19 @@ void ht_extend(hash_table *ht) {
     zfree(old_table);
 }
 
-unsigned long ht_hash(sds key) {
+unsigned long ht_hash_raw(const char *key, size_t key_len) {
     const unsigned char *bytes = (const unsigned char *)key;
     unsigned long hash = 5381;
-    size_t length = sdslen(key);
 
-    for (size_t i = 0; i < length; i++) {
+    for (size_t i = 0; i < key_len; i++) {
         hash = ((hash << 5) + hash) + bytes[i];
     }
 
     return hash;
+}
+
+unsigned long ht_hash(sds key) {
+    return ht_hash_raw(key, sdslen(key));
 }
 
 void ht_free(hash_table *ht) {

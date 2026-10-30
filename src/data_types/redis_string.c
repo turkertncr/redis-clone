@@ -1,5 +1,6 @@
 
 #include <alloc.h>
+#include <ctype.h>
 #include <data_types/redis_string.h>
 #include <string.h>
 
@@ -65,6 +66,12 @@ struct sdshdr *sdsgethdr(sds s) {
     struct sdshdr *sh = (struct sdshdr *) (s - sizeof(struct sdshdr));
     if (sh == NULL) return NULL;
     return sh;
+}
+
+void sdstolower(sds s) {
+    for (int i = 0; i < sdslen(s); i++) {
+        s[i] = (char)tolower(s[i]);
+    }
 }
 
 sds sdscat(sds s1, sds s2) {

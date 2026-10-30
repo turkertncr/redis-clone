@@ -4,7 +4,7 @@
 #include <data_types/redis_string.h>
 
 typedef void (*ht_value_free_fn)(void*);
-typedef void (*ht_iter_fn)(sds key, void* value, void* user_data);
+typedef void (*ht_iter_fn)(sds key, void *value, void *user_data);
 
 typedef struct ht_node {
     sds key;
@@ -29,12 +29,15 @@ typedef struct ht {
 hash_table* ht_create(ht_value_free_fn free_fn, int flags, int capacity);
 ht_node* ht_node_create(sds key, void* value, int ref);
 ht_node* ht_node_get(hash_table *ht, sds key);
+ht_node* ht_node_get_raw(hash_table *ht, const char *key, size_t key_len);
 void ht_extend(hash_table *ht);
 void* ht_get(hash_table* ht, sds key);
+void* ht_get_raw(hash_table* ht, const char *key, size_t key_len);
 int ht_put(hash_table* ht, sds key, void* value);
 void* ht_put_get_old(hash_table* ht, sds key, void* value, int* is_new);
 int ht_delete(hash_table* ht, sds key);
 unsigned long ht_hash(sds key);
+unsigned long ht_hash_raw(const char *key, size_t key_len);
 void ht_free(hash_table* ht);
 int ht_exists(hash_table* ht, sds key);
 void ht_foreach(hash_table* ht, ht_iter_fn fn, void* user_data);
