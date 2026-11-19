@@ -24,6 +24,8 @@ set(COMMON_SOURCES
         src/data_types/sorted_set.c
         include/redis_db.h
         src/redis_db.c
+        include/log.h
+        src/log.c
 )
 
 add_library(redis_common STATIC ${COMMON_SOURCES})

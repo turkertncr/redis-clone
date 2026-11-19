@@ -5,6 +5,7 @@
 #include <config.h>
 #include <data_types/hash_table.h>
 #include <alloc.h>
+#include <log.h>
 #include <stdlib.h>
 
 static char** parse(char *str) {
@@ -60,14 +61,14 @@ int init_config(config *cfg, const char *path) {
 
 sds get_config(config *cfg, char *key) {
     if (!key) {
-        fprintf(stderr, "Invalid find config key %s\n", key);
+        log_err("Invalid find config key");
         return 0;
     }
     sds lookup_key = sdsnew(key);
     char *config = ht_get(cfg->options, lookup_key);
     sdsfree(lookup_key);
     if (!config) {
-        fprintf(stderr, "Can't find config key %s\n", key);
+        log_warn("Could not find config key '%s'", key);
     }
     return config;
 }

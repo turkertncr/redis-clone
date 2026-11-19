@@ -31,7 +31,6 @@ compile_commands.json
 Thumbs.db
 .DS_Store
 
-redis.conf
 appendonly.aof
 
 /tests

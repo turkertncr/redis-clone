@@ -4,9 +4,11 @@
 #include <string.h>
 
 #include <alloc.h>
+#include <log.h>
 #include <queue.h>
 #include <redis_object.h>
 #include <resp_parser.h>
+#include <arpa/inet.h>
 
 #include "util.h"
 
@@ -42,7 +44,14 @@
 #include <server.h>
 #include <command_handler.h>
 
-static void drop_client(struct pollfd *fds, client_ctx *clients, int *nfds, int i) {
+static void get_client_addr(client_ctx *client, sds addrbuf) {
+    struct sockaddr_in client_addr = client->client_addr;
+    inet_ntop(AF_INET, &client_addr.sin_addr, addrbuf, sdslen(addrbuf));
+}
+
+static void drop_client(struct pollfd *fds, client_ctx *clients, sds addrbuf, int *nfds, int i) {
+    get_client_addr(&clients[i], addrbuf);
+    log_info("Client %s disconnected.", addrbuf);
     sdsfree(clients[i].out);
     sdsfree(clients[i].pending);
     closesocket(fds[i].fd);
@@ -126,10 +135,11 @@ int init_socket(redis_db *db, queue *q)
 
     srand(time(NULL));
     SOCKET server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
+    struct sockaddr_in server_addr;
     struct pollfd fds[MAX_CONNECTIONS + 1];
     client_ctx clients[MAX_CONNECTIONS + 1];
     char buff[16384];
+    sds addrbuf = sdsnewlen("", 128);
     int nfds = 1;
 #ifdef _WIN32
     int client_size;
@@ -149,7 +159,6 @@ int init_socket(redis_db *db, queue *q)
         WSACleanup();
         return 1;
     }
-    printf("Socket created.\n");
 
     int opt = 1;
 #ifdef _WIN32
@@ -170,13 +179,11 @@ int init_socket(redis_db *db, queue *q)
         WSACleanup();
         return 1;
     }
-    printf("Bind done.\n");
 
     listen(server_socket, 128);
-    printf("Waiting for incoming connections on port %d...\n", PORT);
+    log_info("Ready to accept connections port=%d.", PORT);
 
     client_size = sizeof(struct sockaddr_in);
-
     for (int i = 1; i <= MAX_CONNECTIONS; i++) {
         fds[i].fd = -1;
         fds[i].events = 0;
@@ -191,36 +198,40 @@ int init_socket(redis_db *db, queue *q)
         if (poll_result < 0) break;
 
         if (fds[0].revents & POLLIN) {
-            if ((client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_size)) < 0) {
-                exit(EXIT_FAILURE);
-            }
-
-            if (nfds > MAX_CONNECTIONS) {
-                printf("Server full. Rejecting connection.\n");
-                closesocket(client_socket);
+            struct sockaddr_in temp_addr;
+            if ((client_socket = accept(server_socket, (struct sockaddr *) &temp_addr, &client_size)) < 0) {
+                log_err("Accept failed with error code : %d\n", errno);
             } else {
-            #ifdef _WIN32
-                u_long mode = 1;
-                ioctlsocket(client_socket, FIONBIO, &mode);
-            #else
-                int flags = fcntl(client_socket, F_GETFL, 0);
-                fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
-            #endif
+                if (nfds > MAX_CONNECTIONS) {
+                    log_warn("Server full. Rejecting connection.");
+                    closesocket(client_socket);
+                } else {
+#ifdef _WIN32
+                    u_long mode = 1;
+                    ioctlsocket(client_socket, FIONBIO, &mode);
+#else
+                    int flags = fcntl(client_socket, F_GETFL, 0);
+                    fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
+#endif
 
-            #ifdef _WIN32
-                setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, (const char *)&opt, sizeof(opt));
-            #else
-                if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) < 0) {
-                    perror("setsockopt TCP_NODELAY failed");
+#ifdef _WIN32
+                    setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, (const char *) &opt, sizeof(opt));
+#else
+                    if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) < 0) {
+                        perror("setsockopt TCP_NODELAY failed");
+                    }
+#endif
+                    fds[nfds].fd = client_socket;
+                    fds[nfds].events = POLLIN;
+                    fds[nfds].revents = 0;
+                    clients[nfds].authenticated = !auth_required();
+                    clients[nfds].pending = NULL;
+                    clients[nfds].out = NULL;
+                    clients[nfds].client_addr = temp_addr;
+                    get_client_addr(&clients[nfds], addrbuf);
+                    log_info("Client %s connected.", addrbuf);
+                    nfds++;
                 }
-            #endif
-                fds[nfds].fd = client_socket;
-                fds[nfds].events = POLLIN;
-                fds[nfds].revents = 0;
-                clients[nfds].authenticated = !auth_required();
-                clients[nfds].pending = NULL;
-                clients[nfds].out = NULL;
-                nfds++;
             }
         }
 
@@ -229,7 +240,7 @@ int init_socket(redis_db *db, queue *q)
             client_ctx *client = &clients[i];
 
             if (f->revents & (POLLHUP | POLLERR | POLLNVAL)) {
-                drop_client(fds, clients, &nfds, i--);
+                drop_client(fds, clients, addrbuf, &nfds, i--);
                 continue;
             }
 
@@ -248,7 +259,7 @@ int init_socket(redis_db *db, queue *q)
 
                     sdsfree(client->out);
                     client->out = NULL;
-                    drop_client(fds, clients, &nfds, i--);
+                    drop_client(fds, clients, addrbuf, &nfds, i--);
                     client_dropped = 1;
                     break;
                 }
@@ -262,7 +273,7 @@ int init_socket(redis_db *db, queue *q)
             if (f->revents & POLLIN) {
                 long read_bytes = recv(f->fd, buff, sizeof(buff) - 1, 0);
                 if (read_bytes <= 0) {
-                    drop_client(fds, clients, &nfds, i--);
+                    drop_client(fds, clients, addrbuf, &nfds, i--);
                 } else {
                     buff[read_bytes] = '\0';
 
@@ -283,8 +294,9 @@ int init_socket(redis_db *db, queue *q)
                     }
 
                     if (status == RESP_ERR) {
-                        fprintf(stderr, "PARSE ERROR on: %.*s\n", (int) sdslen(client->pending), client->pending);
-                        drop_client(fds, clients, &nfds, i--);
+                        get_client_addr(client, addrbuf);
+                        log_err("Parse error client_address=%s, bytes=%u", addrbuf, sdslen(client->pending));
+                        drop_client(fds, clients, addrbuf, &nfds, i--);
                         continue;
                     }
 
@@ -320,7 +332,7 @@ int init_socket(redis_db *db, queue *q)
                                     sdsfree(out);
                                     free_respobj(args);
                                     if (inline_out) sdsfree(inline_out);
-                                    drop_client(fds, clients, &nfds, i--);
+                                    drop_client(fds, clients, addrbuf, &nfds, i--);
                                     continue;
                                 }
                             } else if ((size_t) sent_bytes < len) {

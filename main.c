@@ -5,8 +5,16 @@
 #include <config.h>
 #include <aof_handler.h>
 #include <command_handler.h>
+#include <log.h>
+#ifndef _WIN32
+#include <signal.h>
+#endif
 
 int main(int argc, char **argv) {
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
     redis_db redis_db;
     db_init(&redis_db);
     command_handler_init();
@@ -14,8 +22,8 @@ int main(int argc, char **argv) {
     config cfg;
     const char *cfg_path = argc > 1 ? argv[1] : "redis.conf";
     if (!init_config(&cfg, cfg_path)) {
-        fprintf(stderr, "redis.conf initialization failed\n");
-        return 0;
+        log_err("Redis configuration initialization failed");
+        return 1;
     }
 
     char *password = get_config(&cfg, "requirepass");
@@ -25,7 +33,7 @@ int main(int argc, char **argv) {
 
     aof_handler aof_handler;
     if (!aof_handler_init(&aof_handler, &cfg, &redis_db)) {
-        fprintf(stderr, "aof_handler initialization failed\n");
+        log_err("AOF initialization failed");
         return 0;
     }
     int enabled = sdscmp(get_config(&cfg, "appendonly"), sdsnew("yes")) == 0;

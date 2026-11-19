@@ -6,12 +6,15 @@
 #include <config.h>
 #include <string.h>
 #include <command_handler.h>
+#include <errno.h>
+#include <log.h>
 #include <resp_parser.h>
 #include <server.h>
 
 void aof_read(aof_handler *handler, redis_db *db) {
     sds buffer = sdsempty();
     char chunk[1024];
+    long long start = current_time_ms();
 
     resp_value *args = 0;
     size_t offset = 0;
@@ -27,16 +30,17 @@ void aof_read(aof_handler *handler, redis_db *db) {
                 offset = next - buffer;
                 sds out = sdsempty();
                 execute(args, db, &out);
-                // print_respobj(args, 25);
-                // fprintf(stderr, "%s\n", out);
             }
         } while (status == RESP_OK);
     }
     sdsfree(buffer);
+
+    long long end = current_time_ms();
+    log_info("DB loaded from aof: %lld seconds", end - start);
 }
 
 void* aof_write(void *args) {
-
+    // todo check result of fprintf, fflush, fsync
     aof_handler *handler = args;
     long long last = current_time_ms();
 
@@ -69,9 +73,14 @@ int aof_handler_init(aof_handler *handler, config *cfg, redis_db *db) {
     if (!handler) { return 0; }
 
     sds aof_path = get_config(cfg, "aofpath");
+    if (!aof_path) {
+        log_err("Could not get aofpath");
+        return 0;
+    }
+
     handler->file = fopen(aof_path, "ab+");
     if (!handler->file) {
-        fprintf(stderr, "%s fopen failed\n", __func__);
+        log_err("%s fopen failed %s", aof_path, strerror(errno));
         return 0;
     }
     aof_read(handler, db);

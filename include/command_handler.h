@@ -2,8 +2,8 @@
 #define REDIS_CLONE_COMMAND_HANDLER_H
 
 #include <resp_parser.h>
-#include <data_types/hash_table.h>
 #include <server.h>
+#include <netinet/in.h>
 
 typedef struct {
     sds out;
@@ -13,6 +13,7 @@ typedef struct {
     int authenticated;
     sds pending;
     sds out;
+    struct sockaddr_in client_addr;
 } client_ctx;
 
 typedef void (command_fun)(resp_value *args, redis_db *db, sds *out);
